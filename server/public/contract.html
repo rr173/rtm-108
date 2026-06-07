@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>合同详情 - 在线合同签署平台</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="header">
+    <div class="container">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <h1 id="contractTitle">📝 合同详情</h1>
+          <p>
+            <span class="live-badge">
+              <span class="live-dot"></span>
+              <span id="wsStatus">连接中...</span>
+            </span>
+          </p>
+        </div>
+        <a href="/" class="back-link" style="color: white; opacity: 0.9;">← 返回列表</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="card">
+      <div class="contract-detail-header">
+        <div>
+          <h2 id="detailTitle">加载中...</h2>
+          <span id="statusBadge" class="status-badge">加载中</span>
+        </div>
+        <div id="actionButtons">
+        </div>
+      </div>
+
+      <div class="contract-info">
+        <span>📊 进度: <strong id="progressText">0/0</strong></span>
+        <span class="countdown" id="countdown">⏰ 截止: -</span>
+      </div>
+
+      <div class="progress-bar" style="margin-bottom: 20px;">
+        <div class="progress-fill" id="progressBar" style="width: 0%"></div>
+      </div>
+
+      <h3 style="margin-bottom: 12px; font-size: 16px;">签署方</h3>
+      <div id="signersList" class="signers-list">
+      </div>
+    </div>
+
+    <div class="card">
+      <div id="contractDocument" class="contract-document">
+        <div id="contractContent" class="contract-content">加载中...</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="signModal" class="modal-overlay" onclick="closeSignModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3 class="modal-title">签署合同</h3>
+      <p style="text-align: center; color: #666; margin-bottom: 20px;" id="signerInfo"></p>
+
+      <div class="signature-tabs">
+        <button class="signature-tab active" id="tabCanvas" onclick="switchTab('canvas')">✍️ 手写签名</button>
+        <button class="signature-tab" id="tabText" onclick="switchTab('text')">📝 文字签名</button>
+      </div>
+
+      <div id="canvasPanel">
+        <canvas id="signatureCanvas" class="canvas-signature" width="440" height="180"></canvas>
+        <div style="text-align: center;">
+          <button class="btn btn-secondary btn-sm" onclick="clearCanvas()">清除重签</button>
+        </div>
+      </div>
+
+      <div id="textPanel" style="display: none;">
+        <input type="text" id="textSignatureInput" class="text-signature-input" placeholder="请输入您的姓名" oninput="updateTextPreview()">
+        <div class="text-preview">
+          <span class="preview-text" id="textPreviewText">签名预览</span>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideSignModal()">取消</button>
+        <button class="btn btn-primary" onclick="submitSignature()">确认签署</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/js/contract.js"></script>
+</body>
+</html>

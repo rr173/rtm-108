@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>合同签署平台</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <div class="header">
+    <div class="container">
+      <h1>📝 在线合同协作签署平台</h1>
+      <p>多人协同签署，实时进度追踪</p>
+    </div>
+  </div>
+
+  <div class="container">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+      <h2 style="font-size: 20px;">合同列表</h2>
+      <button class="btn btn-primary" onclick="showCreateModal()">+ 新建合同</button>
+    </div>
+
+    <div id="contractList" class="contract-list">
+      <div class="empty-state">
+        <p>加载中...</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="createModal" class="modal-overlay" onclick="closeModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3 class="modal-title">新建合同</h3>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">合同标题</label>
+        <input type="text" id="newTitle" placeholder="请输入合同标题" 
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">合同内容</label>
+        <textarea id="newContent" rows="6" placeholder="请输入合同内容"
+                  style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; resize: vertical;"></textarea>
+      </div>
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">签署人（逗号分隔，按顺序）</label>
+        <input type="text" id="newSigners" placeholder="张三:zhangsan@a.com,李四:lisi@b.com"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideCreateModal()">取消</button>
+        <button class="btn btn-primary" onclick="createContract()">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
