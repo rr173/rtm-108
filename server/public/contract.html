@@ -38,7 +38,15 @@
       <div class="contract-info">
         <span>📊 进度: <strong id="progressText">0/0</strong></span>
         <span class="countdown" id="countdown">⏰ 截止: -</span>
+        <span>
+          👤 我是: 
+          <select id="identitySelect" onchange="switchIdentity(this.value)" style="padding: 4px 8px; border-radius: 6px; border: 1px solid #ddd; font-size: 13px;">
+            <option value="">访客（仅查看）</option>
+          </select>
+        </span>
       </div>
+
+      <div id="identityHint" style="padding: 10px 14px; border-radius: 8px; margin-bottom: 15px; font-size: 13px; display: none;"></div>
 
       <div class="progress-bar" style="margin-bottom: 20px;">
         <div class="progress-fill" id="progressBar" style="width: 0%"></div>

@@ -43,6 +43,11 @@ function getContractId() {
   return parseInt(parts[parts.length - 1]);
 }
 
+function getUrlParam(name) {
+  const params = new URLSearchParams(window.location.search);
+  return params.get(name);
+}
+
 async function loadContract() {
   try {
     const res = await fetch(`/api/contracts/${contractId}`);
@@ -73,10 +78,96 @@ function renderContract() {
   document.getElementById('progressText').textContent = `${signedCount}/${total} 人`;
   document.getElementById('progressBar').style.width = `${progress}%`;
 
+  renderIdentitySelect();
+  renderIdentityHint();
   renderSigners();
   renderDocument();
   renderActions();
   updateCountdown();
+}
+
+function renderIdentitySelect() {
+  const select = document.getElementById('identitySelect');
+  select.innerHTML = '<option value="">访客（仅查看）</option>' +
+    currentContract.signers.map(s => 
+      `<option value="${s.id}" ${s.id === currentUserSignerId ? 'selected' : ''}>${escapeHtml(s.name)}</option>`
+    ).join('');
+}
+
+function switchIdentity(signerId) {
+  currentUserSignerId = signerId ? parseInt(signerId) : null;
+  
+  if (currentUserSignerId) {
+    const url = new URL(window.location);
+    url.searchParams.set('signer', currentUserSignerId);
+    window.history.replaceState({}, '', url);
+  } else {
+    const url = new URL(window.location);
+    url.searchParams.delete('signer');
+    window.history.replaceState({}, '', url);
+  }
+  
+  renderIdentityHint();
+  renderDocument();
+}
+
+function renderIdentityHint() {
+  const hintEl = document.getElementById('identityHint');
+  
+  if (!currentUserSignerId) {
+    hintEl.style.display = 'block';
+    hintEl.style.background = '#fffbe6';
+    hintEl.style.border = '1px solid #ffe58f';
+    hintEl.style.color = '#d48806';
+    hintEl.innerHTML = '👀 您当前以 <strong>访客</strong> 身份浏览，只能查看不能签署。请在上方选择您的身份后进行签署操作。';
+    return;
+  }
+  
+  const userSigner = currentContract.signers.find(s => s.id === currentUserSignerId);
+  if (!userSigner) {
+    hintEl.style.display = 'none';
+    return;
+  }
+  
+  const userIndex = currentContract.signers.findIndex(s => s.id === currentUserSignerId);
+  const isSigned = !!userSigner.signed_at;
+  const isCurrent = currentContract.status === 'signing' && 
+                    currentContract.currentSignerIndex === userIndex;
+  
+  hintEl.style.display = 'block';
+  
+  if (isSigned) {
+    hintEl.style.background = '#f6ffed';
+    hintEl.style.border = '1px solid #b7eb8f';
+    hintEl.style.color = '#389e0d';
+    hintEl.innerHTML = `✅ 您是 <strong>${escapeHtml(userSigner.name)}</strong>，您已完成签署（${formatDate(userSigner.signed_at)}）。`;
+  } else if (isCurrent) {
+    hintEl.style.background = '#e6f7ff';
+    hintEl.style.border = '1px solid #91d5ff';
+    hintEl.style.color = '#096dd9';
+    hintEl.innerHTML = `✍️ 您是 <strong>${escapeHtml(userSigner.name)}</strong>，现在轮到您签署了！点击下方签署区域开始签名。`;
+  } else if (currentContract.status === 'signing') {
+    const currentSigner = currentContract.signers[currentContract.currentSignerIndex];
+    hintEl.style.background = '#fff0f6';
+    hintEl.style.border = '1px solid #ffadd2';
+    hintEl.style.color = '#c41d7f';
+    hintEl.innerHTML = `⏳ 您是 <strong>${escapeHtml(userSigner.name)}</strong>，当前正在等待 <strong>${escapeHtml(currentSigner?.name || '未知')}</strong> 签署，请耐心等待轮到您。`;
+  } else if (currentContract.status === 'draft') {
+    hintEl.style.background = '#e6f7ff';
+    hintEl.style.border = '1px solid #91d5ff';
+    hintEl.style.color = '#096dd9';
+    hintEl.innerHTML = `📝 您是 <strong>${escapeHtml(userSigner.name)}</strong>，合同尚未开始签署。`;
+  } else if (currentContract.status === 'expired') {
+    hintEl.style.background = '#fff1f0';
+    hintEl.style.border = '1px solid #ffa39e';
+    hintEl.style.color = '#cf1322';
+    hintEl.innerHTML = `⏰ 您是 <strong>${escapeHtml(userSigner.name)}</strong>，合同已过期，无法继续签署。`;
+  } else if (currentContract.status === 'completed') {
+    hintEl.style.background = '#f6ffed';
+    hintEl.style.border = '1px solid #b7eb8f';
+    hintEl.style.color = '#389e0d';
+    hintEl.innerHTML = `🎉 您是 <strong>${escapeHtml(userSigner.name)}</strong>，所有签署人均已完成签署，合同已生效。`;
+  }
 }
 
 function renderSigners() {
@@ -85,6 +176,7 @@ function renderSigners() {
     const isSigned = !!signer.signed_at;
     const isCurrent = currentContract.status === 'signing' && 
                       currentContract.currentSignerIndex === index;
+    const isMe = currentUserSignerId === signer.id;
     
     let statusClass = 'waiting';
     let statusText = '等待中';
@@ -101,9 +193,12 @@ function renderSigners() {
     }
 
     return `
-      <div class="signer-item ${itemClass}">
+      <div class="signer-item ${itemClass}" style="${isMe ? 'box-shadow: 0 0 0 3px #667eea40;' : ''}">
         <span class="order-badge">${index + 1}</span>
-        <div class="signer-name">${escapeHtml(signer.name)}</div>
+        <div class="signer-name">
+          ${escapeHtml(signer.name)}
+          ${isMe ? '<span style="font-size: 11px; background: #667eea; color: white; padding: 2px 6px; border-radius: 10px; margin-left: 6px;">我</span>' : ''}
+        </div>
         <div class="signer-email">${escapeHtml(signer.email)}</div>
         <div class="signer-status ${statusClass}">${statusText}</div>
       </div>
@@ -122,7 +217,8 @@ function renderDocument() {
     const isSigned = !!signer.signed_at;
     const isCurrent = currentContract.status === 'signing' && 
                       currentContract.currentSignerIndex === index;
-    const canSign = isCurrent;
+    const isMe = currentUserSignerId === signer.id;
+    const canSign = isCurrent && isMe && !isSigned;
 
     area.className = `sign-area ${isSigned ? 'signed' : ''} ${!canSign && !isSigned ? 'disabled' : ''}`;
     area.style.left = `${signer.sign_area_x}px`;
@@ -138,8 +234,10 @@ function renderDocument() {
         innerHtml = `<div class="text-signature">${escapeHtml(signer.signature_data)}</div>`;
       }
       innerHtml += `<div class="sign-area-label">${escapeHtml(signer.name)} 已签</div>`;
-    } else if (isCurrent) {
-      innerHtml = `<div class="sign-area-label">点击签署 · ${escapeHtml(signer.name)}</div>`;
+    } else if (canSign) {
+      innerHtml = `<div class="sign-area-label" style="color: #1890ff;">👆 点击签署 · ${escapeHtml(signer.name)}</div>`;
+    } else if (isCurrent && !isMe) {
+      innerHtml = `<div class="sign-area-label">轮到 TA 签署 · ${escapeHtml(signer.name)}</div>`;
     } else {
       innerHtml = `<div class="sign-area-label">等待签署 · ${escapeHtml(signer.name)}</div>`;
     }
@@ -223,8 +321,12 @@ async function startSigning() {
 }
 
 function openSignModal(signerId) {
+  if (signerId !== currentUserSignerId) {
+    showToast('这不是您的签署区域', 'error');
+    return;
+  }
+
   currentSignerId = signerId;
-  currentUserSignerId = signerId;
   
   const signer = currentContract.signers.find(s => s.id === signerId);
   document.getElementById('signerInfo').textContent = `${signer.name} (${signer.email})`;
@@ -387,6 +489,11 @@ function updateTextPreview() {
 }
 
 async function submitSignature() {
+  if (currentSignerId !== currentUserSignerId) {
+    showToast('请用您自己的身份签署', 'error');
+    return;
+  }
+
   let signatureType, signatureData;
   
   if (activeTab === 'canvas') {
@@ -506,6 +613,11 @@ function init() {
   if (!contractId || isNaN(contractId)) {
     showToast('无效的合同ID', 'error');
     return;
+  }
+
+  const signerParam = getUrlParam('signer');
+  if (signerParam && !isNaN(parseInt(signerParam))) {
+    currentUserSignerId = parseInt(signerParam);
   }
 
   loadContract();
