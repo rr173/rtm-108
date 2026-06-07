@@ -56,7 +56,8 @@ function seedDemoData() {
       { name: '李华（乙方）', email: 'lihua@example.com', order_index: 1, signArea: { x: 310, y: 520, width: 180, height: 70 } },
       { name: '王芳（丙方）', email: 'wangfang@example.com', order_index: 2, signArea: { x: 560, y: 520, width: 180, height: 70 } }
     ],
-    deadline: Date.now() + 7 * 24 * 60 * 60 * 1000
+    deadline: Date.now() + 7 * 24 * 60 * 60 * 1000,
+    reminderHours: 0.01
   });
 
   console.log('演示合同已创建，ID:', demoContract.id);

@@ -84,6 +84,7 @@ function renderContract() {
   renderDocument();
   renderActions();
   updateCountdown();
+  loadNotifications();
 }
 
 function renderIdentitySelect() {
@@ -602,9 +603,81 @@ function handleWsMessage(data) {
         window.location.href = '/';
       }, 2000);
       break;
+    case 'notification':
+      if (data.contractId === contractId && data.notification) {
+        loadNotifications();
+        const notif = data.notification;
+        const typeLabel = notif.type === 'reminder' ? '签署催办' : '到期预警';
+        const toastType = notif.type === 'reminder' ? 'warning' : 'error';
+        showToast(`🔔 ${typeLabel}: ${notif.signer_name} 请注意签署`, toastType);
+      }
+      break;
+    case 'notification_updated':
+      if (data.contract && data.contract.id === contractId) {
+        currentContract = data.contract;
+      }
+      loadNotifications();
+      break;
     case 'error':
       console.error('WebSocket错误:', data.message);
       break;
+  }
+}
+
+async function loadNotifications() {
+  try {
+    const res = await fetch(`/api/contracts/${contractId}/notifications`);
+    if (!res.ok) throw new Error('加载通知失败');
+    const notifications = await res.json();
+    renderNotifications(notifications);
+  } catch (e) {
+    console.error('加载通知失败:', e);
+  }
+}
+
+function renderNotifications(notifications) {
+  const listEl = document.getElementById('notificationList');
+  if (!listEl) return;
+
+  if (!notifications || notifications.length === 0) {
+    listEl.innerHTML = '<div class="empty-notifications">暂无通知记录</div>';
+    return;
+  }
+
+  const typeLabels = {
+    reminder: '⏰ 签署催办',
+    deadline_warning: '⚠️ 到期预警'
+  };
+
+  listEl.innerHTML = notifications.map(n => {
+    const typeLabel = typeLabels[n.type] || n.type;
+    const unreadClass = !n.read ? 'unread' : '';
+    
+    return `
+      <div class="notification-item ${n.type} ${unreadClass}">
+        <div class="notification-content">
+          <div class="notification-type">${typeLabel}</div>
+          <div class="notification-target">目标: ${escapeHtml(n.signer_name)} (${escapeHtml(n.signer_email)})</div>
+          <div class="notification-time">${formatDate(n.created_at)}</div>
+        </div>
+        ${!n.read ? `<button class="read-btn" onclick="markNotificationRead(${n.id})">标记已读</button>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+async function markNotificationRead(notifId) {
+  try {
+    const res = await fetch(`/api/contracts/${contractId}/notifications/${notifId}/read`, {
+      method: 'POST'
+    });
+    if (!res.ok) throw new Error('标记失败');
+    loadNotifications();
+    if (typeof loadContract === 'function') {
+      loadContract();
+    }
+  } catch (e) {
+    showToast('标记失败: ' + e.message, 'error');
   }
 }
 

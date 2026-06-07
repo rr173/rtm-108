@@ -109,6 +109,22 @@ class WsService {
     }
   }
 
+  sendNotification(contractId, notification) {
+    const message = JSON.stringify({
+      type: 'notification',
+      notification,
+      contractId
+    });
+
+    if (this.subscriptions.has(contractId)) {
+      this.subscriptions.get(contractId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+  }
+
   broadcastAllStatus() {
     this.subscriptions.forEach((clients, contractId) => {
       const contract = getContractById(contractId);

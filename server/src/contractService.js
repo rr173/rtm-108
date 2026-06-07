@@ -7,8 +7,10 @@ const dataFile = path.join(dataDir, 'contracts.json');
 let data = {
   contracts: [],
   signers: [],
+  notifications: [],
   nextContractId: 1,
-  nextSignerId: 1
+  nextSignerId: 1,
+  nextNotificationId: 1
 };
 
 function ensureDataDir() {
@@ -22,7 +24,20 @@ function loadData() {
   if (fs.existsSync(dataFile)) {
     try {
       const raw = fs.readFileSync(dataFile, 'utf8');
-      data = JSON.parse(raw);
+      const loaded = JSON.parse(raw);
+      data = {
+        contracts: loaded.contracts || [],
+        signers: loaded.signers || [],
+        notifications: loaded.notifications || [],
+        nextContractId: loaded.nextContractId || 1,
+        nextSignerId: loaded.nextSignerId || 1,
+        nextNotificationId: loaded.nextNotificationId || 1
+      };
+      data.contracts.forEach(c => {
+        if (c.reminder_hours === undefined) c.reminder_hours = 24;
+        if (c.signing_started_at === undefined) c.signing_started_at = null;
+        if (c.deadline_warning_sent === undefined) c.deadline_warning_sent = false;
+      });
     } catch (e) {
       console.warn('数据文件损坏，使用空数据:', e.message);
     }
@@ -95,16 +110,18 @@ function listContracts() {
       const currentIndex = signers
         .sort((a, b) => a.order_index - b.order_index)
         .findIndex(s => !s.signed_at);
+      const unreadCount = getUnreadCountForContract(c.id);
       return {
         ...c,
         totalSigners: signers.length,
         signedCount,
-        currentSignerIndex: currentIndex >= 0 ? currentIndex : null
+        currentSignerIndex: currentIndex >= 0 ? currentIndex : null,
+        unreadNotificationCount: unreadCount
       };
     });
 }
 
-function createContract({ title, content, signers, deadline }) {
+function createContract({ title, content, signers, deadline, reminderHours }) {
   const contractId = data.nextContractId++;
   const contract = {
     id: contractId,
@@ -112,6 +129,9 @@ function createContract({ title, content, signers, deadline }) {
     content,
     status: 'draft',
     deadline: deadline || null,
+    reminder_hours: reminderHours != null ? reminderHours : 24,
+    signing_started_at: null,
+    deadline_warning_sent: false,
     created_at: now(),
     updated_at: now()
   };
@@ -139,7 +159,7 @@ function createContract({ title, content, signers, deadline }) {
   return getContractById(contractId);
 }
 
-function updateContract(id, { title, content, signers, deadline }) {
+function updateContract(id, { title, content, signers, deadline, reminderHours }) {
   const contract = data.contracts.find(c => c.id === id);
   if (!contract) return null;
   if (contract.status !== 'draft') {
@@ -149,6 +169,9 @@ function updateContract(id, { title, content, signers, deadline }) {
   contract.title = title;
   contract.content = content;
   contract.deadline = deadline || null;
+  if (reminderHours != null) {
+    contract.reminder_hours = reminderHours;
+  }
   contract.updated_at = now();
 
   data.signers = data.signers.filter(s => s.contract_id !== id);
@@ -198,6 +221,7 @@ function startSigning(id) {
   }
 
   contract.status = 'signing';
+  contract.signing_started_at = now();
   contract.updated_at = now();
   saveData();
 
@@ -253,6 +277,132 @@ function signContract(contractId, signerId, { signatureType, signatureData }) {
   return { contract: updated, completed: allSigned };
 }
 
+function createNotification(contractId, type, signer) {
+  const notifId = data.nextNotificationId++;
+  const notification = {
+    id: notifId,
+    contract_id: contractId,
+    type: type,
+    signer_id: signer.id,
+    signer_name: signer.name,
+    signer_email: signer.email,
+    created_at: now(),
+    read: false
+  };
+  data.notifications.push(notification);
+  saveData();
+  return notification;
+}
+
+function getNotificationsByContract(contractId) {
+  return data.notifications
+    .filter(n => n.contract_id === contractId)
+    .sort((a, b) => b.created_at - a.created_at);
+}
+
+function markNotificationRead(contractId, notifId) {
+  const notif = data.notifications.find(n => n.id === notifId && n.contract_id === contractId);
+  if (!notif) return null;
+  notif.read = true;
+  saveData();
+  return notif;
+}
+
+function getPendingNotificationsByEmail(email) {
+  if (!email) return [];
+  return data.notifications
+    .filter(n => !n.read && n.signer_email === email)
+    .sort((a, b) => b.created_at - a.created_at);
+}
+
+function getCurrentSignerWaitStartTime(contract) {
+  const signers = data.signers
+    .filter(s => s.contract_id === contract.id)
+    .sort((a, b) => a.order_index - b.order_index);
+
+  const currentIndex = signers.findIndex(s => !s.signed_at);
+  if (currentIndex === -1) return null;
+
+  if (currentIndex === 0) {
+    return contract.signing_started_at;
+  } else {
+    return signers[currentIndex - 1].signed_at;
+  }
+}
+
+function getLastReminderTime(contractId, signerId) {
+  const reminders = data.notifications.filter(
+    n => n.contract_id === contractId && n.signer_id === signerId && n.type === 'reminder'
+  );
+  if (reminders.length === 0) return null;
+  return Math.max(...reminders.map(r => r.created_at));
+}
+
+function checkAndGenerateReminders() {
+  const generated = [];
+  const nowTs = now();
+
+  data.contracts.forEach(contract => {
+    if (contract.status !== 'signing') return;
+
+    const signers = data.signers
+      .filter(s => s.contract_id === contract.id)
+      .sort((a, b) => a.order_index - b.order_index);
+
+    const currentIndex = signers.findIndex(s => !s.signed_at);
+    if (currentIndex === -1) return;
+
+    const currentSigner = signers[currentIndex];
+    const waitStartTime = getCurrentSignerWaitStartTime(contract);
+    if (!waitStartTime) return;
+
+    const reminderMs = (contract.reminder_hours || 24) * 60 * 60 * 1000;
+    const lastReminder = getLastReminderTime(contract.id, currentSigner.id);
+
+    const shouldRemind = !lastReminder
+      ? (nowTs - waitStartTime >= reminderMs)
+      : (nowTs - lastReminder >= reminderMs);
+
+    if (shouldRemind) {
+      const notif = createNotification(contract.id, 'reminder', currentSigner);
+      generated.push(notif);
+    }
+  });
+
+  return generated;
+}
+
+function checkAndGenerateDeadlineWarnings() {
+  const generated = [];
+  const nowTs = now();
+  const warningMs = 12 * 60 * 60 * 1000;
+
+  data.contracts.forEach(contract => {
+    if (contract.status !== 'signing') return;
+    if (!contract.deadline) return;
+    if (contract.deadline_warning_sent) return;
+
+    const timeToDeadline = contract.deadline - nowTs;
+    if (timeToDeadline <= 0) return;
+    if (timeToDeadline > warningMs) return;
+
+    const signers = data.signers.filter(s => s.contract_id === contract.id && !s.signed_at);
+    signers.forEach(signer => {
+      const notif = createNotification(contract.id, 'deadline_warning', signer);
+      generated.push(notif);
+    });
+
+    contract.deadline_warning_sent = true;
+    saveData();
+  });
+
+  return generated;
+}
+
+function getUnreadCountForContract(contractId) {
+  return data.notifications.filter(n => n.contract_id === contractId && !n.read).length;
+}
+
 loadData();
 
 module.exports = {
@@ -263,5 +413,11 @@ module.exports = {
   deleteContract,
   startSigning,
   signContract,
-  checkAndUpdateExpiredContracts
+  checkAndUpdateExpiredContracts,
+  getNotificationsByContract,
+  markNotificationRead,
+  getPendingNotificationsByEmail,
+  checkAndGenerateReminders,
+  checkAndGenerateDeadlineWarnings,
+  getUnreadCountForContract
 };

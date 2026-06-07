@@ -67,9 +67,12 @@ function renderContracts(contracts) {
       }
     }
 
+    const unreadCount = c.unreadNotificationCount || 0;
+    
     return `
-      <div class="card contract-card" onclick="viewContract(${c.id})">
+      <div class="card contract-card" onclick="viewContract(${c.id})" style="position: relative;">
         <span class="status-badge ${status.class}">${status.label}</span>
+        ${unreadCount > 0 ? `<span class="notification-badge">${unreadCount}</span>` : ''}
         <div class="card-title">${escapeHtml(c.title)}</div>
         <div class="contract-meta">
           <span>签署进度: ${c.signedCount}/${c.totalSigners} 人</span>
@@ -202,6 +205,7 @@ async function createContract() {
   const title = document.getElementById('newTitle').value.trim();
   const content = document.getElementById('newContent').value.trim();
   const days = parseInt(document.getElementById('newDeadlineDays').value) || 7;
+  const reminderHours = parseFloat(document.getElementById('newReminderHours').value);
 
   if (!title) {
     showToast('请输入合同标题', 'error');
@@ -242,7 +246,7 @@ async function createContract() {
     const res = await fetch('/api/contracts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, content, signers, deadline })
+      body: JSON.stringify({ title, content, signers, deadline, reminderHours })
     });
     
     if (!res.ok) throw new Error('创建失败');
