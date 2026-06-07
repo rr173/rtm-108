@@ -226,13 +226,28 @@ function getTagsByDocument(documentId) {
 function revertToVersion(documentId, versionNumber, commit_message = '') {
   loadData();
   
-  const version = getVersion(documentId, versionNumber);
-  if (!version) return null;
+  const doc = data.documents.find(d => d.id === documentId);
+  if (!doc) return null;
 
-  return updateDocument(documentId, {
-    content: version.content,
-    commit_message: commit_message || `回退到版本 v${versionNumber}`
-  });
+  const sourceVersion = getVersion(documentId, versionNumber);
+  if (!sourceVersion) return null;
+
+  const versions = data.versions.filter(v => v.document_id === documentId);
+  const latestVersion = versions[versions.length - 1];
+
+  const newVersion = {
+    id: data.nextVersionId++,
+    document_id: documentId,
+    version_number: latestVersion ? latestVersion.version_number + 1 : 1,
+    content: sourceVersion.content,
+    commit_message: commit_message || `回退到版本 v${versionNumber}`,
+    created_at: now()
+  };
+
+  data.versions.push(newVersion);
+  saveData();
+
+  return getDocumentById(documentId);
 }
 
 loadData();
