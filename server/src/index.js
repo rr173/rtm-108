@@ -19,6 +19,18 @@ const {
   checkAndGenerateDeadlineWarnings,
   checkAndUpdateExpiredContracts
 } = require('./contractService');
+const {
+  listDocuments,
+  getDocumentById,
+  createDocument,
+  updateDocument,
+  deleteDocument,
+  getVersion,
+  diffVersions,
+  addTag,
+  removeTag,
+  revertToVersion
+} = require('./documentService');
 
 const app = express();
 const server = http.createServer(app);
@@ -27,6 +39,141 @@ const wsService = new WsService(server);
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
+
+app.get('/api/documents', (req, res) => {
+  try {
+    const documents = listDocuments();
+    res.json(documents);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/documents/:id', (req, res) => {
+  try {
+    const doc = getDocumentById(parseInt(req.params.id));
+    if (!doc) {
+      return res.status(404).json({ error: '文档不存在' });
+    }
+    res.json(doc);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/documents', (req, res) => {
+  try {
+    const { title, content, description } = req.body;
+    if (!title || content === undefined) {
+      return res.status(400).json({ error: '缺少必要参数' });
+    }
+    const doc = createDocument({ title, content, description });
+    res.status(201).json(doc);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/documents/:id', (req, res) => {
+  try {
+    const { content, commit_message } = req.body;
+    if (content === undefined) {
+      return res.status(400).json({ error: '缺少内容参数' });
+    }
+    const doc = updateDocument(parseInt(req.params.id), { content, commit_message });
+    if (!doc) {
+      return res.status(404).json({ error: '文档不存在' });
+    }
+    res.json(doc);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/documents/:id', (req, res) => {
+  try {
+    const success = deleteDocument(parseInt(req.params.id));
+    if (!success) {
+      return res.status(404).json({ error: '文档不存在' });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/documents/:id/versions/:version', (req, res) => {
+  try {
+    const version = getVersion(parseInt(req.params.id), parseInt(req.params.version));
+    if (!version) {
+      return res.status(404).json({ error: '版本不存在' });
+    }
+    res.json(version);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/documents/:id/diff', (req, res) => {
+  try {
+    const { old_version, new_version } = req.query;
+    if (!old_version || !new_version) {
+      return res.status(400).json({ error: '缺少版本参数' });
+    }
+    const result = diffVersions(
+      parseInt(req.params.id),
+      parseInt(old_version),
+      parseInt(new_version)
+    );
+    if (!result) {
+      return res.status(404).json({ error: '版本不存在' });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/documents/:id/versions/:versionId/tags', (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name) {
+      return res.status(400).json({ error: '缺少标签名称' });
+    }
+    const tag = addTag(parseInt(req.params.id), parseInt(req.params.versionId), name);
+    if (!tag) {
+      return res.status(404).json({ error: '文档或版本不存在' });
+    }
+    res.status(201).json(tag);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/tags/:tagId', (req, res) => {
+  try {
+    const success = removeTag(parseInt(req.params.tagId));
+    if (!success) {
+      return res.status(404).json({ error: '标签不存在' });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/documents/:id/revert/:version', (req, res) => {
+  try {
+    const { commit_message } = req.body;
+    const result = revertToVersion(parseInt(req.params.id), parseInt(req.params.version), commit_message);
+    if (!result) {
+      return res.status(404).json({ error: '文档或版本不存在' });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get('/api/contracts', (req, res) => {
   try {
@@ -180,6 +327,14 @@ app.get('/', (req, res) => {
 
 app.get('/contract/:id', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'contract.html'));
+});
+
+app.get('/diff', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'diff.html'));
+});
+
+app.get('/diff/:id', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'diff.html'));
 });
 
 seedDemoData();

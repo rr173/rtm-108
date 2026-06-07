@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>文档版本对比</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/diff.css">
+</head>
+<body>
+  <div class="header">
+    <div class="container" style="display: flex; justify-content: space-between; align-items: center;">
+      <div>
+        <h1>📄 文档版本对比工具</h1>
+        <p>逐行差异计算 · 版本管理 · 标签系统</p>
+      </div>
+      <div style="display: flex; gap: 10px;">
+        <a href="/" class="btn btn-secondary">返回首页</a>
+        <button class="btn btn-primary" onclick="showCreateDocModal()">+ 新建文档</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="container diff-app-container">
+    <div class="diff-sidebar">
+      <div class="sidebar-section">
+        <h3 style="margin: 0 0 12px 0; font-size: 15px;">文档列表</h3>
+        <div id="docList" class="doc-list">
+          <div class="empty-state-small">加载中...</div>
+        </div>
+      </div>
+
+      <div id="versionPanel" class="sidebar-section" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h3 style="margin: 0; font-size: 15px;">版本时间线</h3>
+          <span id="docTitle" class="doc-title-small"></span>
+        </div>
+        <div id="versionTimeline" class="version-timeline">
+        </div>
+        <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #eee;">
+          <div style="margin-bottom: 8px; font-size: 13px; color: #666;">
+            已选择: <span id="selectedVersions" style="color: #333; font-weight: 500;">-</span>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button id="compareBtn" class="btn btn-primary btn-sm" style="flex: 1;" onclick="compareVersions()" disabled>
+              对比版本
+            </button>
+            <button class="btn btn-secondary btn-sm" onclick="clearSelection()">
+              清除
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="diff-main">
+      <div id="diffEmptyState" class="diff-empty-state">
+        <div style="font-size: 64px; margin-bottom: 16px;">📝</div>
+        <h3>选择文档开始对比</h3>
+        <p style="color: #888; margin-top: 8px;">从左侧选择文档，然后选择两个版本进行对比</p>
+      </div>
+
+      <div id="diffResultPanel" style="display: none;">
+        <div class="diff-header">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 id="diffTitle" style="margin: 0; font-size: 18px;">版本对比</h2>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <label class="toggle-label">
+                <input type="checkbox" id="showOnlyDiff" onchange="toggleOnlyDiff()">
+                <span>只看差异</span>
+              </label>
+              <button class="btn btn-secondary btn-sm" onclick="showEditModal()">编辑文档</button>
+            </div>
+          </div>
+          <div id="diffStats" class="diff-stats">
+          </div>
+        </div>
+
+        <div class="diff-container">
+          <div class="diff-pane diff-pane-old">
+            <div class="diff-pane-header">
+              <span id="oldVersionLabel">旧版本</span>
+            </div>
+            <div id="oldDiffContent" class="diff-content">
+            </div>
+          </div>
+          <div class="diff-pane diff-pane-new">
+            <div class="diff-pane-header">
+              <span id="newVersionLabel">新版本</span>
+            </div>
+            <div id="newDiffContent" class="diff-content">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="createDocModal" class="modal-overlay" onclick="closeModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width: 600px;">
+      <h3 class="modal-title">新建文档</h3>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">文档标题</label>
+        <input type="text" id="newDocTitle" placeholder="请输入文档标题"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">描述（可选）</label>
+        <input type="text" id="newDocDesc" placeholder="简要描述文档内容"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">初始内容</label>
+        <textarea id="newDocContent" rows="10" placeholder="请输入文档初始内容"
+                  style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 13px; font-family: monospace; resize: vertical;"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideCreateDocModal()">取消</button>
+        <button class="btn btn-primary" onclick="createDocument()">创建文档</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="editModal" class="modal-overlay" onclick="closeModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width: 700px; max-height: 90vh; display: flex; flex-direction: column;">
+      <h3 class="modal-title">编辑文档</h3>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">提交说明（可选）</label>
+        <input type="text" id="editCommitMsg" placeholder="简要描述本次修改"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 20px; flex: 1; display: flex; flex-direction: column; min-height: 300px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">文档内容</label>
+        <textarea id="editContent" rows="15"
+                  style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 13px; font-family: monospace; resize: vertical; flex: 1;"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideEditModal()">取消</button>
+        <button class="btn btn-primary" onclick="saveEdit()">保存新版本</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="tagModal" class="modal-overlay" onclick="closeModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width: 400px;">
+      <h3 class="modal-title">添加标签</h3>
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">标签名称</label>
+        <input type="text" id="tagNameInput" placeholder="如：发布版、评审稿"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideTagModal()">取消</button>
+        <button class="btn btn-primary" onclick="addTag()">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/js/diff.js"></script>
+</body>
+</html>
