@@ -1,5 +1,6 @@
 const { createContract, startSigning, signContract, listContracts } = require('./contractService');
 const { createDocument, updateDocument, addTag, listDocuments } = require('./documentService');
+const { createReview, addComment, resolveComment, listReviewsByDocument } = require('./reviewService');
 
 function seedDemoData() {
   const existingContracts = listContracts();
@@ -220,6 +221,59 @@ function seedDocumentData() {
   console.log('已更新到 v3，新增内容：用户定位、导出功能、团队扩展、风险评估');
   console.log('已添加标签：v3=发布版');
   console.log('演示文档初始化完成，共 3 个版本');
+
+  seedReviewData(doc.id);
+}
+
+function seedReviewData(docId) {
+  const existingReviews = listReviewsByDocument(docId);
+  if (existingReviews.length > 0) {
+    console.log('已存在评审数据，跳过初始化');
+    return;
+  }
+
+  console.log('初始化演示评审数据...');
+
+  const review = createReview({
+    document_id: docId,
+    old_version: 1,
+    new_version: 3,
+    title: 'v1 vs v3 版本评审',
+    created_by: '张经理'
+  });
+
+  console.log('演示评审已创建，ID:', review.id);
+
+  const comment1 = addComment({
+    review_id: review.id,
+    new_line: 4,
+    content: '这里新增的"平台采用微服务架构"描述得很好，明确了技术方向。建议补充一下微服务的具体拆分策略。',
+    author: '李工程师'
+  });
+
+  console.log('已添加第一条评论（第4行）');
+
+  const reply1 = addComment({
+    review_id: review.id,
+    content: '同意，后续我们会在技术方案文档中详细说明微服务的拆分原则和服务边界。',
+    author: '王架构师',
+    parent_id: comment1.id
+  });
+
+  console.log('已添加回复评论');
+
+  const comment2 = addComment({
+    review_id: review.id,
+    new_line: 21,
+    content: '开发周期从3个月延长到4个月，能说明一下主要是哪部分工作增加了吗？是风险评估部分导致的延期吗？',
+    author: '陈产品'
+  });
+
+  resolveComment(comment2.id);
+
+  console.log('已添加第二条评论（第21行）并标记为已解决');
+
+  console.log('演示评审数据初始化完成');
 }
 
 function generateFakeSignature() {

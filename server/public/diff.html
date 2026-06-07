@@ -49,6 +49,35 @@
               清除
             </button>
           </div>
+          <button id="createReviewBtn" class="btn btn-success btn-sm" style="width: 100%; margin-top: 8px;" onclick="showCreateReviewModal()" disabled>
+            📝 创建评审
+          </button>
+        </div>
+      </div>
+
+      <div id="reviewPanel" class="sidebar-section" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h3 style="margin: 0; font-size: 15px;">评审会话</h3>
+          <span id="reviewStatusBadge" class="review-status-badge"></span>
+        </div>
+        <div id="reviewInfo" style="margin-bottom: 12px; font-size: 13px;">
+          <div id="reviewTitle" style="font-weight: 600; margin-bottom: 4px;"></div>
+          <div id="reviewMeta" style="color: #888; font-size: 12px;"></div>
+        </div>
+        <div id="reviewStats" class="review-stats" style="margin-bottom: 12px;">
+        </div>
+        <div style="display: flex; gap: 6px; margin-bottom: 12px;">
+          <button class="btn btn-success btn-sm" style="flex: 1;" onclick="approveReview()">
+            ✓ 通过
+          </button>
+          <button class="btn btn-danger btn-sm" style="flex: 1;" onclick="rejectReview()">
+            ✗ 拒绝
+          </button>
+        </div>
+        <div style="border-top: 1px solid #eee; padding-top: 12px;">
+          <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">评审列表</div>
+          <div id="reviewList" class="review-list">
+          </div>
         </div>
       </div>
     </div>
@@ -70,25 +99,43 @@
                 <span>只看差异</span>
               </label>
               <button class="btn btn-secondary btn-sm" onclick="showEditModal()">编辑文档</button>
+              <button id="toggleCommentsBtn" class="btn btn-primary btn-sm" onclick="toggleCommentPanel()">
+                💬 评论
+              </button>
             </div>
           </div>
           <div id="diffStats" class="diff-stats">
           </div>
+          <div id="reviewInfoBar" class="review-info-bar" style="display: none;">
+            <span id="reviewInfoText"></span>
+          </div>
         </div>
 
-        <div class="diff-container">
-          <div class="diff-pane diff-pane-old">
-            <div class="diff-pane-header">
-              <span id="oldVersionLabel">旧版本</span>
+        <div class="diff-wrapper">
+          <div class="diff-container">
+            <div class="diff-pane diff-pane-old">
+              <div class="diff-pane-header">
+                <span id="oldVersionLabel">旧版本</span>
+              </div>
+              <div id="oldDiffContent" class="diff-content">
+              </div>
             </div>
-            <div id="oldDiffContent" class="diff-content">
+            <div class="diff-pane diff-pane-new">
+              <div class="diff-pane-header">
+                <span id="newVersionLabel">新版本</span>
+              </div>
+              <div id="newDiffContent" class="diff-content">
+              </div>
             </div>
           </div>
-          <div class="diff-pane diff-pane-new">
-            <div class="diff-pane-header">
-              <span id="newVersionLabel">新版本</span>
+
+          <div id="commentPanel" class="comment-panel" style="display: none;">
+            <div class="comment-panel-header">
+              <span>💬 评论</span>
+              <button class="comment-close-btn" onclick="toggleCommentPanel()">×</button>
             </div>
-            <div id="newDiffContent" class="diff-content">
+            <div id="commentPanelContent" class="comment-panel-content">
+              <div class="empty-state-small">选择带评论的行查看详情</div>
             </div>
           </div>
         </div>
@@ -152,6 +199,55 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="hideTagModal()">取消</button>
         <button class="btn btn-primary" onclick="addTag()">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="createReviewModal" class="modal-overlay" onclick="closeModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width: 500px;">
+      <h3 class="modal-title">创建评审会话</h3>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">评审标题</label>
+        <input type="text" id="reviewTitleInput" placeholder="请输入评审标题"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">你的名字</label>
+        <input type="text" id="reviewerNameInput" placeholder="请输入你的名字"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 8px; font-size: 13px;">
+        <div style="color: #666; margin-bottom: 4px;">对比版本：</div>
+        <div style="font-weight: 600;">
+          <span id="reviewOldVersion">v1</span> → <span id="reviewNewVersion">v2</span>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideCreateReviewModal()">取消</button>
+        <button class="btn btn-primary" onclick="createReview()">创建评审</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="addCommentModal" class="modal-overlay" onclick="closeModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width: 500px;">
+      <h3 class="modal-title">添加评论</h3>
+      <div style="margin-bottom: 10px; font-size: 13px; color: #666;">
+        <span id="commentLineInfo"></span>
+      </div>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">你的名字</label>
+        <input type="text" id="commentAuthorInput" placeholder="请输入你的名字"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">评论内容</label>
+        <textarea id="commentContentInput" rows="4" placeholder="请输入评论内容..."
+                  style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px; resize: vertical; font-family: inherit;"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideAddCommentModal()">取消</button>
+        <button class="btn btn-primary" onclick="submitComment()">提交评论</button>
       </div>
     </div>
   </div>

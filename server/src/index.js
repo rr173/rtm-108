@@ -31,6 +31,20 @@ const {
   removeTag,
   revertToVersion
 } = require('./documentService');
+const {
+  createReview,
+  getReviewById,
+  listReviewsByDocument,
+  updateReviewStatus,
+  deleteReview,
+  addComment,
+  getCommentsByReview,
+  updateComment,
+  resolveComment,
+  unresolveComment,
+  deleteComment,
+  checkAllResolved
+} = require('./reviewService');
 
 const app = express();
 const server = http.createServer(app);
@@ -129,6 +143,162 @@ app.get('/api/documents/:id/diff', (req, res) => {
       return res.status(404).json({ error: '版本不存在' });
     }
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/documents/:id/reviews', (req, res) => {
+  try {
+    const reviews = listReviewsByDocument(parseInt(req.params.id));
+    res.json(reviews);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/documents/:id/reviews', (req, res) => {
+  try {
+    const { old_version, new_version, title, created_by } = req.body;
+    if (!old_version || !new_version) {
+      return res.status(400).json({ error: '缺少版本参数' });
+    }
+    const doc = getDocumentById(parseInt(req.params.id));
+    if (!doc) {
+      return res.status(404).json({ error: '文档不存在' });
+    }
+    const review = createReview({
+      document_id: parseInt(req.params.id),
+      old_version: parseInt(old_version),
+      new_version: parseInt(new_version),
+      title,
+      created_by
+    });
+    res.status(201).json(review);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/reviews/:id', (req, res) => {
+  try {
+    const review = getReviewById(parseInt(req.params.id));
+    if (!review) {
+      return res.status(404).json({ error: '评审不存在' });
+    }
+    res.json(review);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/reviews/:id/status', (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!['pending', 'approved', 'rejected'].includes(status)) {
+      return res.status(400).json({ error: '无效的状态值' });
+    }
+    const review = updateReviewStatus(parseInt(req.params.id), status);
+    if (!review) {
+      return res.status(404).json({ error: '评审不存在' });
+    }
+    wsService.notifyReviewUpdate(review.id, 'review_status_updated');
+    res.json(review);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/reviews/:id', (req, res) => {
+  try {
+    const success = deleteReview(parseInt(req.params.id));
+    if (!success) {
+      return res.status(404).json({ error: '评审不存在' });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/reviews/:id/comments', (req, res) => {
+  try {
+    const comments = getCommentsByReview(parseInt(req.params.id));
+    res.json(comments);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/reviews/:id/comments', (req, res) => {
+  try {
+    const { old_line, new_line, content, author, parent_id } = req.body;
+    if (!content) {
+      return res.status(400).json({ error: '评论内容不能为空' });
+    }
+    const comment = addComment({
+      review_id: parseInt(req.params.id),
+      old_line: old_line !== undefined ? parseInt(old_line) : null,
+      new_line: new_line !== undefined ? parseInt(new_line) : null,
+      content,
+      author: author || '匿名用户',
+      parent_id: parent_id ? parseInt(parent_id) : null
+    });
+    if (!comment) {
+      return res.status(404).json({ error: '评审或父评论不存在' });
+    }
+    wsService.notifyReviewComment(parseInt(req.params.id), comment, 'new_comment');
+    const review = getReviewById(parseInt(req.params.id));
+    if (review) {
+      wsService.notifyReviewUpdate(review.id, 'review_updated');
+    }
+    res.status(201).json(comment);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/comments/:id/resolve', (req, res) => {
+  try {
+    const comment = resolveComment(parseInt(req.params.id));
+    if (!comment) {
+      return res.status(404).json({ error: '评论不存在' });
+    }
+    wsService.notifyCommentResolved(comment.review_id, comment, 'comment_resolved');
+    const review = getReviewById(comment.review_id);
+    if (review) {
+      wsService.notifyReviewUpdate(review.id, 'review_updated');
+    }
+    res.json(comment);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/comments/:id/unresolve', (req, res) => {
+  try {
+    const comment = unresolveComment(parseInt(req.params.id));
+    if (!comment) {
+      return res.status(404).json({ error: '评论不存在' });
+    }
+    wsService.notifyCommentResolved(comment.review_id, comment, 'comment_unresolved');
+    const review = getReviewById(comment.review_id);
+    if (review) {
+      wsService.notifyReviewUpdate(review.id, 'review_updated');
+    }
+    res.json(comment);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/comments/:id', (req, res) => {
+  try {
+    const success = deleteComment(parseInt(req.params.id));
+    if (!success) {
+      return res.status(404).json({ error: '评论不存在' });
+    }
+    res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -334,6 +504,10 @@ app.get('/diff', (req, res) => {
 });
 
 app.get('/diff/:id', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'diff.html'));
+});
+
+app.get('/review/:id', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'diff.html'));
 });
 
