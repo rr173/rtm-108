@@ -17,6 +17,22 @@ let selectedNewLine = null;
 let addCommentLineData = null;
 let reviewerName = localStorage.getItem('reviewerName') || '';
 
+let currentPatches = [];
+let currentConflicts = [];
+let currentPatchVersion = null;
+let currentConflict = null;
+let patchAuthorColors = {};
+const PATCH_AUTHOR_PALETTE = [
+  { bg: 'rgba(102, 126, 234, 0.25)', border: '#667eea', dot: '#667eea' },
+  { bg: 'rgba(255, 107, 107, 0.25)', border: '#ff6b6b', dot: '#ff6b6b' },
+  { bg: 'rgba(81, 207, 102, 0.25)', border: '#51cf66', dot: '#51cf66' },
+  { bg: 'rgba(255, 212, 59, 0.25)', border: '#ffd43b', dot: '#ffd43b' },
+  { bg: 'rgba(173, 127, 255, 0.25)', border: '#ad7fff', dot: '#ad7fff' },
+  { bg: 'rgba(255, 159, 67, 0.25)', border: '#ff9f43', dot: '#ff9f43' },
+  { bg: 'rgba(72, 207, 173, 0.25)', border: '#48cfad', dot: '#48cfad' },
+  { bg: 'rgba(236, 100, 155, 0.25)', border: '#ec649b', dot: '#ec649b' }
+];
+
 function showToast(message, type = 'info') {
   const toast = document.getElementById('toast');
   toast.textContent = message;
@@ -45,6 +61,8 @@ function closeModalOutside(event) {
     hideTagModal();
     hideCreateReviewModal();
     hideAddCommentModal();
+    hideCreatePatchModal();
+    hideConflictResolveModal();
   }
 }
 
@@ -625,6 +643,7 @@ async function joinReview(reviewId) {
     
     await loadDiffForReview();
     await loadReviewComments();
+    await loadPatches(review.new_version);
     loadReviewList();
     
     connectWebSocket();
@@ -1097,8 +1116,37 @@ function renderLine(type, lineNum, content, charDiff = null, side = null) {
     ? `<span class="add-comment-btn" onclick="event.stopPropagation(); showAddCommentModal(${oldLine || 'null'}, ${newLine || 'null'}, '${side}')" title="添加评论">+</span>`
     : '';
   
+  const patchOverlays = lineNum !== '' ? getPatchOverlaysForLine(lineNum, side) : [];
+  const hasConflict = lineNum !== '' ? isLineInConflict(lineNum, side) : false;
+  
+  let patchOverlayHtml = '';
+  let patchClass = '';
+  let patchStyle = '';
+  
+  if (patchOverlays.length > 0 && side === 'old') {
+    const colors = patchOverlays.map(p => p.color.border).join(', ');
+    patchClass = 'has-patch-overlay';
+    
+    if (patchOverlays.length === 1) {
+      patchStyle = `background: ${patchOverlays[0].color.bg}; border-left: 3px solid ${patchOverlays[0].color.border};`;
+    } else {
+      const gradientStops = patchOverlays.map((p, i) => {
+        const percent = (i / patchOverlays.length) * 100;
+        const endPercent = ((i + 1) / patchOverlays.length) * 100;
+        return `${p.color.border} ${percent}%, ${p.color.border} ${endPercent}%`;
+      }).join(', ');
+      patchStyle = `background: linear-gradient(to right, ${patchOverlays.map(p => p.color.bg).join(', ')}); border-left: 3px solid ${patchOverlays[0].color.border};`;
+    }
+  }
+  
+  if (hasConflict && side === 'old') {
+    patchClass += ' patch-conflict-line';
+  }
+  
   return `
-    <div class="diff-line diff-line-${type}" onclick="showLineComments(${oldLine || 'null'}, ${newLine || 'null'})">
+    <div class="diff-line diff-line-${type} ${patchClass}" 
+         style="${patchStyle}"
+         onclick="showLineComments(${oldLine || 'null'}, ${newLine || 'null'})">
       ${addCommentBtn}
       <span class="line-number">${lineNumStr}</span>
       <span class="line-prefix">${prefix}</span>
@@ -1151,5 +1199,534 @@ async function selectDocumentFromReview(reviewId) {
   } catch (e) {
     console.error('加载评审失败:', e);
     showToast('加载评审失败', 'error');
+  }
+}
+
+function getAuthorColor(author) {
+  if (!patchAuthorColors[author]) {
+    const index = Object.keys(patchAuthorColors).length % PATCH_AUTHOR_PALETTE.length;
+    patchAuthorColors[author] = PATCH_AUTHOR_PALETTE[index];
+  }
+  return patchAuthorColors[author];
+}
+
+async function loadPatches(versionNumber) {
+  if (!currentDocId) return;
+  
+  currentPatchVersion = versionNumber;
+  patchAuthorColors = {};
+  
+  try {
+    const res = await fetch(`/api/documents/${currentDocId}/patches?version=${versionNumber}`);
+    currentPatches = await res.json();
+    
+    const conflictRes = await fetch(`/api/documents/${currentDocId}/conflicts?version=${versionNumber}`);
+    currentConflicts = await conflictRes.json();
+    
+    currentPatches.forEach(p => getAuthorColor(p.created_by));
+    
+    renderPatchPanel();
+    refreshPatchOverlays();
+  } catch (e) {
+    console.error('加载补丁失败:', e);
+  }
+}
+
+function renderPatchPanel() {
+  const panel = document.getElementById('patchPanel');
+  if (!panel) return;
+  
+  panel.style.display = 'block';
+  
+  const pendingPatches = currentPatches.filter(p => p.status === 'pending' || p.status === 'accepted');
+  document.getElementById('patchCountBadge').textContent = pendingPatches.length;
+  
+  const hasConflicts = currentConflicts.length > 0;
+  const statsEl = document.getElementById('patchStats');
+  
+  const stats = {
+    pending: currentPatches.filter(p => p.status === 'pending').length,
+    accepted: currentPatches.filter(p => p.status === 'accepted').length,
+    rejected: currentPatches.filter(p => p.status === 'rejected').length,
+    merged: currentPatches.filter(p => p.status === 'merged').length
+  };
+  
+  statsEl.innerHTML = `
+    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+      <span class="patch-stat patch-stat-pending">待处理 ${stats.pending}</span>
+      <span class="patch-stat patch-stat-accepted">已采纳 ${stats.accepted}</span>
+      ${hasConflicts ? '<span class="patch-stat patch-stat-conflict">⚠️ 冲突 ' + currentConflicts.length + '</span>' : ''}
+    </div>
+  `;
+  
+  const listEl = document.getElementById('patchList');
+  
+  if (currentPatches.length === 0) {
+    listEl.innerHTML = '<div class="empty-state-small">暂无补丁</div>';
+    return;
+  }
+  
+  const conflictPatchIds = new Set();
+  currentConflicts.forEach(c => {
+    conflictPatchIds.add(c.patch1_id);
+    conflictPatchIds.add(c.patch2_id);
+  });
+  
+  listEl.innerHTML = currentPatches.map(patch => {
+    const color = getAuthorColor(patch.created_by);
+    const hasConflict = conflictPatchIds.has(patch.id);
+    const statusText = {
+      pending: '待处理',
+      accepted: '已采纳',
+      rejected: '已拒绝',
+      merged: '已合并'
+    }[patch.status] || patch.status;
+    
+    const statusClass = `patch-status-${patch.status}`;
+    
+    return `
+      <div class="patch-item ${hasConflict ? 'patch-conflict' : ''} ${statusClass}" 
+           onclick="highlightPatch(${patch.id})"
+           data-patch-id="${patch.id}">
+        <div class="patch-item-header">
+          <div class="patch-author-info">
+            <span class="patch-author-dot" style="background: ${color.dot}"></span>
+            <span class="patch-author-name">${escapeHtml(patch.created_by)}</span>
+          </div>
+          <span class="patch-status-badge ${statusClass}">${statusText}</span>
+        </div>
+        <div class="patch-item-desc">${escapeHtml(patch.description || '无描述')}</div>
+        <div class="patch-item-meta">
+          <span>第 ${patch.start_line}-${patch.end_line} 行</span>
+          ${hasConflict ? '<span class="patch-conflict-badge">⚠️ 冲突</span>' : ''}
+        </div>
+        ${patch.status === 'pending' ? `
+          <div class="patch-item-actions">
+            <button class="patch-action-btn accept" onclick="event.stopPropagation(); acceptPatch(${patch.id})">采纳</button>
+            <button class="patch-action-btn reject" onclick="event.stopPropagation(); rejectPatch(${patch.id})">拒绝</button>
+            ${hasConflict ? `<button class="patch-action-btn resolve" onclick="event.stopPropagation(); resolvePatchConflict(${patch.id})">解决冲突</button>` : ''}
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }).join('');
+  
+  const mergeBtn = document.getElementById('mergeBtn');
+  const mergeableCount = stats.pending + stats.accepted;
+  mergeBtn.disabled = hasConflicts || mergeableCount === 0;
+  if (hasConflicts) {
+    mergeBtn.textContent = '🔒 存在冲突，无法合并';
+  } else if (mergeableCount === 0) {
+    mergeBtn.textContent = '🔀 无可合并补丁';
+  } else {
+    mergeBtn.textContent = `🔀 一键合并 ${mergeableCount} 个补丁`;
+  }
+}
+
+function refreshPatchOverlays() {
+  if (currentDiffResult && currentPatches.length > 0) {
+    renderDiffContent(currentDiffResult.diff);
+  }
+}
+
+function getPatchOverlaysForLine(lineNum, side) {
+  if (!currentPatchVersion || !currentPatches.length) return [];
+  
+  const overlays = [];
+  
+  const isOldSide = side === 'old';
+  const versionOnSide = isOldSide ? selectedOldVersion : selectedNewVersion;
+  
+  if (versionOnSide !== currentPatchVersion) return overlays;
+  
+  currentPatches.forEach(patch => {
+    if (patch.status === 'rejected' || patch.status === 'merged') return;
+    if (patch.version_number !== currentPatchVersion) return;
+    
+    if (lineNum >= patch.start_line && lineNum <= patch.end_line) {
+      overlays.push({
+        patchId: patch.id,
+        author: patch.created_by,
+        color: getAuthorColor(patch.created_by),
+        isConflict: false,
+        status: patch.status
+      });
+    }
+  });
+  
+  return overlays;
+}
+
+function isLineInConflict(lineNum, side) {
+  if (!currentConflicts.length) return false;
+  
+  const isOldSide = side === 'old';
+  const versionOnSide = isOldSide ? selectedOldVersion : selectedNewVersion;
+  
+  if (versionOnSide !== currentPatchVersion) return false;
+  
+  return currentConflicts.some(c => {
+    const overlapStart = Math.max(c.patch1.start_line, c.patch2.start_line);
+    const overlapEnd = Math.min(c.patch1.end_line, c.patch2.end_line);
+    return lineNum >= overlapStart && lineNum <= overlapEnd;
+  });
+}
+
+function highlightPatch(patchId) {
+  const patch = currentPatches.find(p => p.id === patchId);
+  if (!patch) return;
+  
+  const isOldVersion = currentPatchVersion === selectedOldVersion;
+  const contentEl = isOldVersion 
+    ? document.getElementById('oldDiffContent') 
+    : document.getElementById('newDiffContent');
+  
+  if (!contentEl) return;
+  
+  const allLines = document.querySelectorAll('.diff-line');
+  allLines.forEach(line => {
+    line.classList.remove('patch-highlighted');
+  });
+  
+  const lines = contentEl.querySelectorAll('.diff-line');
+  lines.forEach(line => {
+    const lineNumEl = line.querySelector('.line-number');
+    if (lineNumEl) {
+      const lineNum = parseInt(lineNumEl.textContent);
+      if (lineNum >= patch.start_line && lineNum <= patch.end_line) {
+        line.classList.add('patch-highlighted');
+        line.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }
+  });
+}
+
+function showCreatePatchModal() {
+  if (!currentDocId) {
+    showToast('请先选择文档', 'error');
+    return;
+  }
+  
+  const version = currentPatchVersion || (currentDocument && currentDocument.versions.length > 0 
+    ? currentDocument.versions[currentDocument.versions.length - 1].version_number 
+    : 1);
+  
+  document.getElementById('patchAuthorInput').value = reviewerName;
+  document.getElementById('patchDescInput').value = '';
+  document.getElementById('patchStartLine').value = '';
+  document.getElementById('patchEndLine').value = '';
+  document.getElementById('patchContentInput').value = '';
+  
+  document.getElementById('createPatchModal').classList.add('active');
+}
+
+function hideCreatePatchModal() {
+  document.getElementById('createPatchModal').classList.remove('active');
+}
+
+async function submitPatch() {
+  const created_by = document.getElementById('patchAuthorInput').value.trim();
+  const description = document.getElementById('patchDescInput').value.trim();
+  const start_line = parseInt(document.getElementById('patchStartLine').value);
+  const end_line = parseInt(document.getElementById('patchEndLine').value);
+  const replacement_text = document.getElementById('patchContentInput').value;
+  
+  if (!created_by) {
+    showToast('请输入提交人名字', 'error');
+    return;
+  }
+  if (!start_line || !end_line || start_line > end_line) {
+    showToast('请输入有效的行范围', 'error');
+    return;
+  }
+  if (replacement_text === '') {
+    showToast('替换内容不能为空', 'error');
+    return;
+  }
+  
+  reviewerName = created_by;
+  localStorage.setItem('reviewerName', reviewerName);
+  
+  const version = currentPatchVersion || (currentDocument && currentDocument.versions.length > 0 
+    ? currentDocument.versions[currentDocument.versions.length - 1].version_number 
+    : 1);
+  
+  try {
+    const res = await fetch(`/api/documents/${currentDocId}/patches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        start_line,
+        end_line,
+        replacement_text,
+        created_by,
+        description,
+        version_number: version,
+        review_id: currentReviewId
+      })
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '提交失败');
+    }
+    
+    hideCreatePatchModal();
+    showToast('补丁提交成功', 'success');
+    await loadPatches(version);
+    
+    if (currentDiffResult) {
+      renderDiffContent(currentDiffResult.diff);
+    }
+  } catch (e) {
+    showToast('提交失败: ' + e.message, 'error');
+  }
+}
+
+async function acceptPatch(patchId) {
+  try {
+    const res = await fetch(`/api/patches/${patchId}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'accepted' })
+    });
+    
+    if (!res.ok) throw new Error('操作失败');
+    
+    showToast('已采纳该补丁', 'success');
+    await loadPatches(currentPatchVersion);
+    
+    if (currentDiffResult) {
+      renderDiffContent(currentDiffResult.diff);
+    }
+  } catch (e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+async function rejectPatch(patchId) {
+  try {
+    const res = await fetch(`/api/patches/${patchId}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'rejected' })
+    });
+    
+    if (!res.ok) throw new Error('操作失败');
+    
+    showToast('已拒绝该补丁', 'success');
+    await loadPatches(currentPatchVersion);
+    
+    if (currentDiffResult) {
+      renderDiffContent(currentDiffResult.diff);
+    }
+  } catch (e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+function resolvePatchConflict(patchId) {
+  const conflict = currentConflicts.find(
+    c => c.patch1_id === patchId || c.patch2_id === patchId
+  );
+  
+  if (!conflict) {
+    showToast('未找到冲突', 'error');
+    return;
+  }
+  
+  currentConflict = conflict;
+  showConflictResolveModal();
+}
+
+function showConflictResolveModal() {
+  if (!currentConflict) return;
+  
+  const { patch1, patch2, overlap_start, overlap_end } = currentConflict;
+  
+  document.getElementById('conflictPatch1Author').textContent = patch1.created_by;
+  document.getElementById('conflictPatch1Lines').textContent = `第 ${patch1.start_line}-${patch1.end_line} 行`;
+  document.getElementById('conflictPatch2Author').textContent = patch2.created_by;
+  document.getElementById('conflictPatch2Lines').textContent = `第 ${patch2.start_line}-${patch2.end_line} 行`;
+  
+  document.getElementById('conflictPane1Title').textContent = `${patch1.created_by} 的修改`;
+  document.getElementById('conflictPane2Title').textContent = `${patch2.created_by} 的修改`;
+  
+  const patch1Full = currentPatches.find(p => p.id === patch1.id);
+  const patch2Full = currentPatches.find(p => p.id === patch2.id);
+  
+  document.getElementById('conflictPane1Content').textContent = 
+    patch1Full ? patch1Full.replacement_text : patch1.description;
+  document.getElementById('conflictPane2Content').textContent = 
+    patch2Full ? patch2Full.replacement_text : patch2.description;
+  
+  document.getElementById('conflictMergeEditor').value = 
+    patch1Full ? patch1Full.replacement_text : '';
+  
+  document.getElementById('conflictResolveModal').classList.add('active');
+}
+
+function hideConflictResolveModal() {
+  document.getElementById('conflictResolveModal').classList.remove('active');
+  currentConflict = null;
+}
+
+function chooseLeftPatch() {
+  if (!currentConflict) return;
+  const patchFull = currentPatches.find(p => p.id === currentConflict.patch1_id);
+  if (patchFull) {
+    document.getElementById('conflictMergeEditor').value = patchFull.replacement_text;
+  }
+}
+
+function chooseRightPatch() {
+  if (!currentConflict) return;
+  const patchFull = currentPatches.find(p => p.id === currentConflict.patch2_id);
+  if (patchFull) {
+    document.getElementById('conflictMergeEditor').value = patchFull.replacement_text;
+  }
+}
+
+async function rejectBothPatches() {
+  if (!currentConflict) return;
+  
+  if (!confirm('确定要拒绝这两个冲突的补丁吗？')) return;
+  
+  try {
+    await Promise.all([
+      fetch(`/api/patches/${currentConflict.patch1_id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'rejected' })
+      }),
+      fetch(`/api/patches/${currentConflict.patch2_id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'rejected' })
+      })
+    ]);
+    
+    hideConflictResolveModal();
+    showToast('两个补丁均已拒绝', 'success');
+    await loadPatches(currentPatchVersion);
+    
+    if (currentDiffResult) {
+      renderDiffContent(currentDiffResult.diff);
+    }
+  } catch (e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+async function confirmResolveConflict() {
+  if (!currentConflict) return;
+  
+  const resolvedContent = document.getElementById('conflictMergeEditor').value;
+  const patch1Full = currentPatches.find(p => p.id === currentConflict.patch1_id);
+  const patch2Full = currentPatches.find(p => p.id === currentConflict.patch2_id);
+  
+  const leftContent = patch1Full ? patch1Full.replacement_text : '';
+  const rightContent = patch2Full ? patch2Full.replacement_text : '';
+  
+  try {
+    if (resolvedContent === leftContent) {
+      await fetch(`/api/patches/${currentConflict.patch1_id}/resolve`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolution: 'accept' })
+      });
+      await fetch(`/api/patches/${currentConflict.patch2_id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'rejected' })
+      });
+    } else if (resolvedContent === rightContent) {
+      await fetch(`/api/patches/${currentConflict.patch2_id}/resolve`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolution: 'accept' })
+      });
+      await fetch(`/api/patches/${currentConflict.patch1_id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'rejected' })
+      });
+    } else {
+      await fetch(`/api/patches/${currentConflict.patch1_id}/resolve`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resolution: 'manual', resolved_content: resolvedContent })
+      });
+      await fetch(`/api/patches/${currentConflict.patch2_id}/status`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'rejected' })
+      });
+    }
+    
+    hideConflictResolveModal();
+    showToast('冲突已解决', 'success');
+    await loadPatches(currentPatchVersion);
+    
+    if (currentDiffResult) {
+      renderDiffContent(currentDiffResult.diff);
+    }
+  } catch (e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+async function mergePatches() {
+  if (!currentDocId || !currentPatchVersion) {
+    showToast('请先选择文档和版本', 'error');
+    return;
+  }
+  
+  if (currentConflicts.length > 0) {
+    showToast('存在未解决的冲突，请先解决所有冲突', 'error');
+    return;
+  }
+  
+  if (!confirm('确定要合并所有待处理和已采纳的补丁吗？这将创建一个新版本。')) {
+    return;
+  }
+  
+  try {
+    const res = await fetch(`/api/documents/${currentDocId}/merge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        version: currentPatchVersion,
+        commit_message: '合并评审补丁',
+        merged_by: reviewerName || '系统'
+      })
+    });
+    
+    const data = await res.json();
+    
+    if (!res.ok) {
+      throw new Error(data.error || '合并失败');
+    }
+    
+    showToast(`合并成功！已生成 v${data.new_version.version_number}`, 'success');
+    
+    const docRes = await fetch(`/api/documents/${currentDocId}`);
+    const doc = await docRes.json();
+    currentDocument = doc;
+    renderVersionTimeline(doc.versions);
+    loadDocuments();
+    
+    await loadPatches(data.new_version.version_number);
+    
+    if (currentDiffResult) {
+      selectedNewVersion = data.new_version.version_number;
+      const diffRes = await fetch(
+        `/api/documents/${currentDocId}/diff?old_version=${currentPatchVersion}&new_version=${data.new_version.version_number}`
+      );
+      currentDiffResult = await diffRes.json();
+      renderDiffResult(currentDiffResult);
+    }
+  } catch (e) {
+    showToast('合并失败: ' + e.message, 'error');
   }
 }

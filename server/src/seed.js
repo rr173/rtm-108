@@ -1,6 +1,7 @@
 const { createContract, startSigning, signContract, listContracts } = require('./contractService');
 const { createDocument, updateDocument, addTag, listDocuments } = require('./documentService');
 const { createReview, addComment, resolveComment, listReviewsByDocument } = require('./reviewService');
+const { createPatch, listPatchesByDocument } = require('./patchService');
 
 function seedDemoData() {
   const existingContracts = listContracts();
@@ -274,6 +275,59 @@ function seedReviewData(docId) {
   console.log('已添加第二条评论（第21行）并标记为已解决');
 
   console.log('演示评审数据初始化完成');
+
+  seedPatchData(docId, review.id);
+}
+
+function seedPatchData(docId, reviewId) {
+  const existingPatches = listPatchesByDocument(docId);
+  if (existingPatches.length > 0) {
+    console.log('已存在补丁数据，跳过初始化');
+    return;
+  }
+
+  console.log('初始化演示补丁数据...');
+
+  const patch1 = createPatch({
+    document_id: docId,
+    version_number: 3,
+    start_line: 5,
+    end_line: 6,
+    replacement_text: '本项目旨在开发一个企业级在线协作平台，支持多人实时编辑、文档管理和团队协作。\n平台采用微服务架构，具备高可用性和可扩展性，支持万人级并发访问。',
+    created_by: '张产品',
+    description: '优化项目概述，增加企业级定位和并发能力描述',
+    review_id: reviewId
+  });
+
+  console.log('补丁1已创建（张产品，第5-6行）');
+
+  const patch2 = createPatch({
+    document_id: docId,
+    version_number: 3,
+    start_line: 6,
+    end_line: 7,
+    replacement_text: '平台采用云原生微服务架构，具备高可用性、高可扩展性和高安全性。\n目标用户：企业团队、教育机构、个人创作者和开源社区。',
+    created_by: '李架构师',
+    description: '强化技术架构描述，补充云原生和安全性，增加开源社区用户',
+    review_id: reviewId
+  });
+
+  console.log('补丁2已创建（李架构师，第6-7行） - 与补丁1存在冲突');
+
+  const patch3 = createPatch({
+    document_id: docId,
+    version_number: 3,
+    start_line: 18,
+    end_line: 19,
+    replacement_text: '1. 用户注册与登录（支持SSO单点登录）\n2. 文档创建与编辑（支持富文本和Markdown）',
+    created_by: '王开发',
+    description: '丰富功能列表，增加SSO和Markdown支持',
+    review_id: reviewId
+  });
+
+  console.log('补丁3已创建（王开发，第18-19行） - 无冲突');
+
+  console.log('演示补丁数据初始化完成，共 3 个补丁（2个冲突 + 1个无冲突）');
 }
 
 function generateFakeSignature() {

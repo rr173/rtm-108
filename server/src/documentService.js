@@ -110,7 +110,7 @@ function createDocument({ title, content, description = '' }) {
   return getDocumentById(doc.id);
 }
 
-function updateDocument(id, { content, commit_message = '' }) {
+function updateDocument(id, { content, commit_message = '', skip_save = false }) {
   loadData();
   
   const doc = data.documents.find(d => d.id === id);
@@ -133,7 +133,10 @@ function updateDocument(id, { content, commit_message = '' }) {
   };
 
   data.versions.push(newVersion);
-  saveData();
+  
+  if (!skip_save) {
+    saveData();
+  }
 
   return getDocumentById(id);
 }

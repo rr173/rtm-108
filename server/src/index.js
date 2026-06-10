@@ -45,6 +45,18 @@ const {
   deleteComment,
   checkAllResolved
 } = require('./reviewService');
+const {
+  createPatch,
+  getPatchById,
+  listPatchesByDocument,
+  listPatchesByReview,
+  updatePatchStatus,
+  deletePatch,
+  detectConflicts,
+  resolveConflict,
+  mergePatches,
+  getPatchStats
+} = require('./patchService');
 
 const app = express();
 const server = http.createServer(app);
@@ -486,6 +498,151 @@ app.get('/api/notifications/pending', (req, res) => {
     const { email } = req.query;
     const notifications = getPendingNotificationsByEmail(email);
     res.json(notifications);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/documents/:id/patches', (req, res) => {
+  try {
+    const { status, version } = req.query;
+    const patches = listPatchesByDocument(parseInt(req.params.id), {
+      status: status || null,
+      versionNumber: version !== undefined ? parseInt(version) : null
+    });
+    res.json(patches);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/documents/:id/patches/stats', (req, res) => {
+  try {
+    const { version } = req.query;
+    if (!version) {
+      return res.status(400).json({ error: '缺少版本参数' });
+    }
+    const stats = getPatchStats(parseInt(req.params.id), parseInt(version));
+    res.json(stats);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/patches/:id', (req, res) => {
+  try {
+    const patch = getPatchById(parseInt(req.params.id));
+    if (!patch) {
+      return res.status(404).json({ error: '补丁不存在' });
+    }
+    res.json(patch);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/documents/:id/patches', (req, res) => {
+  try {
+    const { start_line, end_line, replacement_text, created_by, description, version_number, review_id } = req.body;
+    if (start_line === undefined || end_line === undefined || replacement_text === undefined || !version_number) {
+      return res.status(400).json({ error: '缺少必要参数' });
+    }
+    const result = createPatch({
+      document_id: parseInt(req.params.id),
+      version_number: parseInt(version_number),
+      start_line: parseInt(start_line),
+      end_line: parseInt(end_line),
+      replacement_text,
+      created_by: created_by || '匿名用户',
+      description: description || '',
+      review_id: review_id ? parseInt(review_id) : null
+    });
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.status(201).json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/patches/:id/status', (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!['pending', 'accepted', 'rejected', 'merged'].includes(status)) {
+      return res.status(400).json({ error: '无效的状态值' });
+    }
+    const patch = updatePatchStatus(parseInt(req.params.id), status);
+    if (!patch) {
+      return res.status(404).json({ error: '补丁不存在' });
+    }
+    res.json(patch);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/patches/:id', (req, res) => {
+  try {
+    const success = deletePatch(parseInt(req.params.id));
+    if (!success) {
+      return res.status(404).json({ error: '补丁不存在' });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/documents/:id/conflicts', (req, res) => {
+  try {
+    const { version } = req.query;
+    if (!version) {
+      return res.status(400).json({ error: '缺少版本参数' });
+    }
+    const conflicts = detectConflicts(parseInt(req.params.id), parseInt(version));
+    res.json(conflicts);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/patches/:id/resolve', (req, res) => {
+  try {
+    const { resolution, resolved_content } = req.body;
+    const result = resolveConflict(parseInt(req.params.id), resolution, resolved_content);
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/documents/:id/merge', (req, res) => {
+  try {
+    const { version, commit_message, merged_by } = req.body;
+    if (!version) {
+      return res.status(400).json({ error: '缺少版本参数' });
+    }
+    const result = mergePatches(parseInt(req.params.id), parseInt(version), {
+      commit_message: commit_message || '',
+      merged_by: merged_by || '系统'
+    });
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error, conflicts: result.conflicts });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/reviews/:id/patches', (req, res) => {
+  try {
+    const patches = listPatchesByReview(parseInt(req.params.id));
+    res.json(patches);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
