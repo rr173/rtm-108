@@ -2,6 +2,7 @@ const { createContract, startSigning, signContract, listContracts } = require('.
 const { createDocument, updateDocument, addTag, listDocuments } = require('./documentService');
 const { createReview, addComment, resolveComment, listReviewsByDocument } = require('./reviewService');
 const { createPatch, listPatchesByDocument } = require('./patchService');
+const { createTemplate, listTemplates } = require('./templateService');
 
 function seedDemoData() {
   const existingContracts = listContracts();
@@ -77,6 +78,7 @@ function seedDemoData() {
   }
 
   seedDocumentData();
+  seedTemplateData();
 
   console.log('演示数据初始化完成');
 }
@@ -328,6 +330,124 @@ function seedPatchData(docId, reviewId) {
   console.log('补丁3已创建（王开发，第18-19行） - 无冲突');
 
   console.log('演示补丁数据初始化完成，共 3 个补丁（2个冲突 + 1个无冲突）');
+}
+
+function seedTemplateData() {
+  const existingTemplates = listTemplates();
+  if (existingTemplates.length > 0) {
+    console.log('已存在模板数据，跳过初始化');
+    return;
+  }
+
+  console.log('初始化演示模板数据...');
+
+  const contractTemplate = createTemplate({
+    title: '商务合同模板',
+    description: '包含签署人变量和条款条件块的合同模板',
+    content: `商务合同
+
+合同编号：{{合同编号}}
+签订日期：{{签订日期}}
+
+甲方：{{甲方名称}}
+地址：{{甲方地址}}
+
+乙方：{{乙方名称}}
+地址：{{乙方地址}}
+
+鉴于甲乙双方本着平等互利的原则，经友好协商，达成如下协议：
+
+第一条 合作内容
+{{#if 合作内容}}
+{{合作内容}}
+{{/if}}
+{{#if 无合作内容}}
+双方同意在以下领域开展合作：技术研发、市场推广等。
+{{/if}}
+
+第二条 合同金额
+本合同总金额为人民币 {{合同金额}} 元。
+{{#if 含税}}
+以上金额已包含相关税费。
+{{/if}}
+{{#if 不含税}}
+以上金额不含税费，税费由付款方另行承担。
+{{/if}}
+
+第三条 付款方式
+{{#if 分期付款}}
+1. 合同签订后支付30%预付款
+2. 项目中期支付40%进度款
+3. 项目验收完成后支付30%尾款
+{{/if}}
+{{#if 一次性付款}}
+合同签订后一次性全额付款。
+{{/if}}
+
+第四条 违约责任
+任何一方违反本合同约定，应承担相应的违约责任。
+
+第五条 争议解决
+因本合同引起的争议，双方应友好协商解决。
+
+签署：
+
+甲方签署人：{{甲方签署人}}
+日期：{{甲方签署日期}}
+
+乙方签署人：{{乙方签署人}}
+日期：{{乙方签署日期}}
+`
+  });
+
+  console.log('演示合同模板已创建，ID:', contractTemplate.id);
+
+  const notifyTemplate = createTemplate({
+    title: '批量通知模板',
+    description: '包含收件人列表循环块的通知模板',
+    content: `通知
+
+发件人：{{发件人}}
+主题：{{通知主题}}
+
+亲爱的收件人：
+
+{{#if 重要通知}}
+【重要】请务必仔细阅读以下内容：
+{{/if}}
+
+{{通知正文}}
+
+{{#each 收件人列表}}
+---
+致：{{姓名}}
+邮箱：{{邮箱}}
+{{#if 部门}}
+部门：{{部门}}
+{{/if}}
+{{/each}}
+
+{{#if 需要回复}}
+请各位收到请回复确认。
+{{/if}}
+
+{{#if 附件列表}}
+附件：
+{{#each 附件列表}}
+- {{文件名}}
+{{/each}}
+{{/if}}
+
+此致
+敬礼！
+
+{{发件人公司}}
+{{发送日期}}
+`
+  });
+
+  console.log('演示通知模板已创建，ID:', notifyTemplate.id);
+  console.log('演示模板数据初始化完成');
 }
 
 function generateFakeSignature() {

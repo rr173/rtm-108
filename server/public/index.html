@@ -9,15 +9,25 @@
 <body>
   <div class="header">
     <div class="container">
-      <h1>📝 在线合同协作签署平台</h1>
-      <p>多人协同签署，实时进度追踪</p>
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <h1>📝 在线合同协作签署平台</h1>
+          <p>多人协同签署，实时进度追踪</p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <a href="/templates" class="btn btn-secondary" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3);">📋 文档模板</a>
+        </div>
+      </div>
     </div>
   </div>
 
   <div class="container">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
       <h2 style="font-size: 20px;">合同列表</h2>
-      <button class="btn btn-primary" onclick="showCreateModal()">+ 新建合同</button>
+      <div style="display: flex; gap: 10px;">
+        <a href="/templates" class="btn btn-secondary">📋 模板管理</a>
+        <button class="btn btn-primary" onclick="showCreateModal()">+ 新建合同</button>
+      </div>
     </div>
 
     <div id="contractList" class="contract-list">

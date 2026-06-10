@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>模板编辑器 - 合同签署平台</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/template.css">
+</head>
+<body>
+  <div class="header">
+    <div class="container">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <h1>✏️ 模板编辑器</h1>
+          <p>编辑模板，实时预览渲染效果</p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <a href="/templates" class="btn btn-secondary">← 模板列表</a>
+          <button id="saveBtn" class="btn btn-primary">💾 保存模板</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="template-meta card" style="margin-bottom: 20px;">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div>
+          <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">模板标题</label>
+          <input type="text" id="templateTitle" placeholder="请输入模板标题"
+                 style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+        </div>
+        <div>
+          <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">模板描述（可选）</label>
+          <input type="text" id="templateDesc" placeholder="模板用途说明"
+                 style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+        </div>
+      </div>
+      <div id="templateInfo" style="margin-top: 12px; display: none;">
+        <span style="font-size: 12px; color: #999;">模板 ID: </span>
+        <span id="templateId" style="font-size: 12px; color: #667eea; font-weight: 600;"></span>
+        <span style="font-size: 12px; color: #999; margin-left: 20px;">版本: </span>
+        <span id="templateVersion" style="font-size: 12px; color: #667eea; font-weight: 600;"></span>
+      </div>
+    </div>
+
+    <div class="editor-layout">
+      <div class="editor-pane">
+        <div class="pane-header">
+          <span class="pane-title">📝 模板编辑</span>
+          <span id="varCount" style="font-size: 12px; color: #999;">0 个变量</span>
+        </div>
+        <div class="editor-wrapper">
+          <textarea id="templateContent" placeholder="在此输入模板内容...&#10;&#10;支持语法:&#10;  {{变量名}} - 变量占位符&#10;  {{#if 变量名}}内容{{/if}} - 条件块&#10;  {{#each 列表变量}}内容{{/each}} - 循环块&#10;&#10;示例:&#10;尊敬的 {{客户姓名}}，您好！&#10;{{#if VIP}}欢迎VIP客户！{{/if}}" spellcheck="false"></textarea>
+          <pre id="highlightOverlay" aria-hidden="true"></pre>
+        </div>
+        <div id="variableList" class="variable-list">
+          <div style="font-size: 13px; color: #666; margin-bottom: 8px; font-weight: 500;">📊 检测到的变量:</div>
+          <div id="variableTags" style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <span style="font-size: 12px; color: #999;">暂无变量</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="preview-pane">
+        <div class="pane-header">
+          <span class="pane-title">👁️ 实时预览</span>
+          <span style="font-size: 12px; color: #999;">基于下方示例数据渲染</span>
+        </div>
+        <div id="previewContent" class="preview-content"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 20px;">
+      <div class="pane-header" style="padding: 0 0 12px 0; border-bottom: 1px solid #eee;">
+        <span class="pane-title">⚙️ 示例变量数据 (JSON)</span>
+        <span style="font-size: 12px; color: #999;">修改后自动更新预览</span>
+      </div>
+      <div style="display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: start; margin-top: 12px;">
+        <textarea id="sampleData" rows="8" placeholder='{"变量名": "值"}' spellcheck="false"
+                  style="width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-family: 'Monaco', 'Menlo', monospace; font-size: 13px; resize: vertical;"></textarea>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <button class="btn btn-secondary btn-sm" onclick="formatJson()">格式化 JSON</button>
+          <button class="btn btn-secondary btn-sm" onclick="loadDemo(1)">📄 合同示例</button>
+          <button class="btn btn-secondary btn-sm" onclick="loadDemo(2)">📧 通知示例</button>
+          <span id="jsonStatus" style="font-size: 12px; text-align: center; padding: 4px;"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 20px;">
+      <div class="pane-header" style="padding: 0 0 12px 0; border-bottom: 1px solid #eee;">
+        <span class="pane-title">🚀 批量生成文档</span>
+        <span style="font-size: 12px; color: #999;">使用多组变量数据批量生成独立文档</span>
+      </div>
+      <div style="margin-top: 12px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">批量数据 (JSON数组，每组数据一个对象)</label>
+        <textarea id="batchData" rows="6" placeholder='[{"姓名": "张三"}, {"姓名": "李四"}]' spellcheck="false"
+                  style="width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; font-family: 'Monaco', 'Menlo', monospace; font-size: 13px; resize: vertical;"></textarea>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 12px;">
+          <span id="batchCount" style="font-size: 13px; color: #666;">将生成 0 份文档</span>
+          <button id="batchGenerateBtn" class="btn btn-primary">📦 批量生成文档</button>
+        </div>
+        <div id="batchResult" style="margin-top: 12px; display: none;"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 20px;">
+      <div class="pane-header" style="padding: 0 0 12px 0; border-bottom: 1px solid #eee;">
+        <span class="pane-title">📚 语法参考</span>
+      </div>
+      <div style="margin-top: 12px; font-size: 13px; line-height: 1.8; color: #333;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+          <div>
+            <div><strong>变量替换:</strong></div>
+            <code style="background: #f6f8fa; padding: 2px 6px; border-radius: 4px;">{{变量名}}</code>
+            <div style="color: #666; margin-top: 4px;">支持嵌套: <code style="background: #f6f8fa; padding: 2px 6px; border-radius: 4px;">{{user.name}}</code></div>
+          </div>
+          <div>
+            <div><strong>条件块:</strong></div>
+            <code style="background: #f6f8fa; padding: 2px 6px; border-radius: 4px;">{{#if isVip}}VIP内容{{/if}}</code>
+            <div style="color: #666; margin-top: 4px;">变量为空/false时不渲染</div>
+          </div>
+          <div>
+            <div><strong>循环块:</strong></div>
+            <code style="background: #f6f8fa; padding: 2px 6px; border-radius: 4px;">{{#each users}}{{name}}{{/each}}</code>
+            <div style="color: #666; margin-top: 4px;">可用 <code style="background: #f6f8fa; padding: 1px 4px; border-radius: 3px;">this</code> 和 <code style="background: #f6f8fa; padding: 1px 4px; border-radius: 3px;">index</code></div>
+          </div>
+          <div>
+            <div><strong>嵌套支持:</strong></div>
+            <div style="color: #666;">条件和循环块至少支持两层嵌套</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/js/template-engine.js"></script>
+  <script src="/js/template-editor.js"></script>
+</body>
+</html>

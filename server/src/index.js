@@ -57,6 +57,17 @@ const {
   mergePatches,
   getPatchStats
 } = require('./patchService');
+const {
+  listTemplates,
+  getTemplateById,
+  createTemplate,
+  updateTemplate,
+  deleteTemplate,
+  getTemplateVersion,
+  renderTemplateById,
+  batchGenerateDocuments
+} = require('./templateService');
+const { renderTemplate, extractVariables } = require('./templateEngine');
 
 const app = express();
 const server = http.createServer(app);
@@ -646,6 +657,158 @@ app.get('/api/reviews/:id/patches', (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+app.get('/api/templates', (req, res) => {
+  try {
+    const templates = listTemplates();
+    res.json(templates);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/templates/:id', (req, res) => {
+  try {
+    const tpl = getTemplateById(parseInt(req.params.id));
+    if (!tpl) {
+      return res.status(404).json({ error: '模板不存在' });
+    }
+    res.json(tpl);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/templates', (req, res) => {
+  try {
+    const { title, content, description } = req.body;
+    if (!title || content === undefined) {
+      return res.status(400).json({ error: '缺少必要参数' });
+    }
+    const tpl = createTemplate({ title, content, description });
+    res.status(201).json(tpl);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/templates/:id', (req, res) => {
+  try {
+    const { content, commit_message, title, description } = req.body;
+    const tpl = updateTemplate(parseInt(req.params.id), {
+      content,
+      commit_message,
+      title,
+      description
+    });
+    if (!tpl) {
+      return res.status(404).json({ error: '模板不存在' });
+    }
+    res.json(tpl);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/templates/:id', (req, res) => {
+  try {
+    const success = deleteTemplate(parseInt(req.params.id));
+    if (!success) {
+      return res.status(404).json({ error: '模板不存在' });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/templates/:id/versions/:version', (req, res) => {
+  try {
+    const version = getTemplateVersion(parseInt(req.params.id), parseInt(req.params.version));
+    if (!version) {
+      return res.status(404).json({ error: '版本不存在' });
+    }
+    res.json(version);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/templates/:id/render', (req, res) => {
+  try {
+    const { variables, keep_missing, version_number } = req.body;
+    const result = renderTemplateById(parseInt(req.params.id), variables || {}, {
+      keepMissing: keep_missing !== false,
+      versionNumber: version_number ? parseInt(version_number) : null
+    });
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/templates/render', (req, res) => {
+  try {
+    const { template, variables, keep_missing } = req.body;
+    if (template === undefined) {
+      return res.status(400).json({ error: '缺少模板内容' });
+    }
+    const rendered = renderTemplate(template, variables || {}, {
+      keepMissing: keep_missing !== false
+    });
+    const extractedVars = extractVariables(template);
+    res.json({
+      content: rendered,
+      variables: extractedVars
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/templates/extract-variables', (req, res) => {
+  try {
+    const { template } = req.body;
+    if (template === undefined) {
+      return res.status(400).json({ error: '缺少模板内容' });
+    }
+    const variables = extractVariables(template);
+    res.json({ variables });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/templates/:id/batch-generate', (req, res) => {
+  try {
+    const { variables_list } = req.body;
+    if (!variables_list || !Array.isArray(variables_list)) {
+      return res.status(400).json({ error: '缺少变量数据数组' });
+    }
+    const result = batchGenerateDocuments(parseInt(req.params.id), variables_list);
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/templates', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'templates.html'));
+});
+
+app.get('/template-editor', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'template-editor.html'));
+});
+
+app.get('/template-editor/:id', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'template-editor.html'));
 });
 
 app.get('/', (req, res) => {

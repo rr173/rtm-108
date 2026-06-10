@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>文档模板 - 合同签署平台</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/template.css">
+</head>
+<body>
+  <div class="header">
+    <div class="container">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div>
+          <h1>📋 文档模板管理</h1>
+          <p>创建模板，批量生成文档</p>
+        </div>
+        <div style="display: flex; gap: 10px;">
+          <a href="/" class="btn btn-secondary">返回首页</a>
+          <a href="/template-editor" class="btn btn-primary">+ 新建模板</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    <div id="templateList" class="template-list">
+      <div class="empty-state">
+        <p>加载中...</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/js/templates.js"></script>
+</body>
+</html>
