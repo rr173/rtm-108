@@ -604,6 +604,10 @@ function renderReviewList(reviews) {
       rejected: '已拒绝'
     }[review.status] || review.status;
     
+    const mergedBadge = review.merged_version 
+      ? `<span class="review-item-badge" style="background: linear-gradient(135deg, #10b981, #059669);">🚀 产出v${review.merged_version}</span>`
+      : '';
+    
     return `
       <div class="review-item ${currentReviewId === review.id ? 'active' : ''}" 
            onclick="joinReview(${review.id})">
@@ -611,6 +615,7 @@ function renderReviewList(reviews) {
         <div class="review-item-meta">
           <span>v${review.old_version} → v${review.new_version}</span>
           <span class="review-item-badge ${statusClass}">${statusText}</span>
+          ${mergedBadge}
         </div>
         <div class="review-item-time">
           ${review.top_level_comment_count || 0} 条评论 · ${formatDate(review.created_at)}
@@ -709,15 +714,24 @@ function updateReviewPanel() {
   statusBadge.textContent = status.text;
   statusBadge.className = `review-status-badge ${status.class}`;
   
-  document.getElementById('reviewStats').innerHTML = `
+  let statsHtml = `
     <span class="review-stat">💬 ${currentReview.top_level_comment_count || 0} 条评论</span>
     <span class="review-stat">✅ ${currentReview.resolved_count || 0} 已解决</span>
   `;
   
+  if (currentReview.merged_version) {
+    statsHtml += `<span class="review-stat" style="background: linear-gradient(135deg, #10b981, #059669);">🚀 已产出 v${currentReview.merged_version}</span>`;
+  }
+  
+  document.getElementById('reviewStats').innerHTML = statsHtml;
+  
   const infoBar = document.getElementById('reviewInfoBar');
   infoBar.style.display = 'block';
-  document.getElementById('reviewInfoText').textContent = 
-    `当前评审: ${currentReview.title} (${status.text})`;
+  let infoText = `当前评审: ${currentReview.title} (${status.text})`;
+  if (currentReview.merged_version) {
+    infoText += ` · 已合并产出 v${currentReview.merged_version}`;
+  }
+  document.getElementById('reviewInfoText').textContent = infoText;
 }
 
 function showCreateReviewModal() {
@@ -1715,6 +1729,16 @@ async function mergePatches() {
     currentDocument = doc;
     renderVersionTimeline(doc.versions);
     loadDocuments();
+    
+    if (currentReviewId) {
+      const reviewRes = await fetch(`/api/reviews/${currentReviewId}`);
+      const updatedReview = await reviewRes.json();
+      if (updatedReview) {
+        currentReview = updatedReview;
+        updateReviewPanel();
+      }
+    }
+    loadReviews();
     
     await loadPatches(data.new_version.version_number);
     

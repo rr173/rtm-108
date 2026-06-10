@@ -63,8 +63,10 @@ function listDocuments() {
   }).sort((a, b) => b.updated_at - a.updated_at);
 }
 
-function getDocumentById(id) {
-  loadData();
+function getDocumentById(id, { reload = true } = {}) {
+  if (reload) {
+    loadData();
+  }
   const doc = data.documents.find(d => d.id === id);
   if (!doc) return null;
 
@@ -138,7 +140,7 @@ function updateDocument(id, { content, commit_message = '', skip_save = false })
     saveData();
   }
 
-  return getDocumentById(id);
+  return getDocumentById(id, { reload: !skip_save });
 }
 
 function deleteDocument(id) {
@@ -266,5 +268,7 @@ module.exports = {
   addTag,
   removeTag,
   getTagsByDocument,
-  revertToVersion
+  revertToVersion,
+  saveData: saveData,
+  loadData: loadData
 };

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
-const { getVersion, getDocumentById, updateDocument } = require('./documentService');
+const { getVersion, getDocumentById, updateDocument, saveData: saveDocumentData, loadData: loadDocumentData } = require('./documentService');
+const { updateReview } = require('./reviewService');
 
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'patches.json');
@@ -271,26 +272,39 @@ function mergePatches(documentId, versionNumber, { commit_message = '', merged_b
       return { error: '创建新版本失败', status: 500 };
     }
 
+    const newVersionNumber = doc.versions[doc.versions.length - 1].version_number;
     const mergedPatchIds = patchesToMerge.map(p => p.id);
     data.patches.forEach(p => {
       if (mergedPatchIds.includes(p.id)) {
         p.status = PATCH_STATUS.MERGED;
         p.merged_at = now();
         p.merged_by = merged_by;
-        p.merged_into_version = doc.versions[doc.versions.length - 1].version_number;
+        p.merged_into_version = newVersionNumber;
         p.updated_at = now();
       }
     });
 
+    const reviewIds = [...new Set(patchesToMerge.map(p => p.review_id).filter(Boolean))];
+
+    saveDocumentData();
     saveData();
+
+    reviewIds.forEach(reviewId => {
+      updateReview(reviewId, {
+        merged_version: newVersionNumber,
+        merged_by: merged_by
+      });
+    });
 
     return {
       success: true,
       new_version: doc.versions[doc.versions.length - 1],
       merged_patch_count: patchesToMerge.length,
-      merged_patch_ids: mergedPatchIds
+      merged_patch_ids: mergedPatchIds,
+      linked_review_ids: reviewIds
     };
   } catch (e) {
+    loadDocumentData();
     loadData();
     return { error: '合并过程中发生错误: ' + e.message, status: 500 };
   }

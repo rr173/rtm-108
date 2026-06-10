@@ -105,6 +105,29 @@ function updateReviewStatus(id, status) {
   return getReviewById(id);
 }
 
+function updateReview(id, updates) {
+  loadData();
+  const review = data.reviews.find(r => r.id === id);
+  if (!review) return null;
+
+  if (updates.status !== undefined) {
+    if (!['pending', 'approved', 'rejected'].includes(updates.status)) {
+      return null;
+    }
+    review.status = updates.status;
+  }
+  if (updates.merged_version !== undefined) {
+    review.merged_version = updates.merged_version;
+  }
+  if (updates.merged_by !== undefined) {
+    review.merged_by = updates.merged_by;
+  }
+  review.updated_at = now();
+  saveData();
+
+  return getReviewById(id);
+}
+
 function deleteReview(id) {
   loadData();
   const reviewIndex = data.reviews.findIndex(r => r.id === id);
@@ -244,6 +267,7 @@ module.exports = {
   getReviewById,
   listReviewsByDocument,
   updateReviewStatus,
+  updateReview,
   deleteReview,
   addComment,
   getCommentById,
