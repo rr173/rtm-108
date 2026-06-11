@@ -206,7 +206,7 @@ function batchGenerateDocuments(templateId, variablesList = []) {
   const generatedDocs = [];
 
   variablesList.forEach((variables, index) => {
-    const rendered = renderTemplate(latestVersion.content, variables, { keepMissing: false });
+    const rendered = renderTemplate(latestVersion.content, variables, { keepMissing: true });
     const docTitle = `${tpl.title} ${String(index + 1).padStart(2, '0')}`;
     const doc = createDocument({
       title: docTitle,
