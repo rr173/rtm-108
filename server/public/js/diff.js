@@ -22,6 +22,15 @@ let currentConflicts = [];
 let currentPatchVersion = null;
 let currentConflict = null;
 let patchAuthorColors = {};
+
+let currentUserId = localStorage.getItem('currentUserId') || '';
+let currentUserRole = null;
+let currentPermissions = null;
+let canManagePermissions = false;
+let currentAuditLogs = [];
+let currentAuditLogPage = 1;
+let hasMoreAuditLogs = false;
+let auditLogPanelExpanded = false;
 const PATCH_AUTHOR_PALETTE = [
   { bg: 'rgba(102, 126, 234, 0.25)', border: '#667eea', dot: '#667eea' },
   { bg: 'rgba(255, 107, 107, 0.25)', border: '#ff6b6b', dot: '#ff6b6b' },
@@ -32,6 +41,71 @@ const PATCH_AUTHOR_PALETTE = [
   { bg: 'rgba(72, 207, 173, 0.25)', border: '#48cfad', dot: '#48cfad' },
   { bg: 'rgba(236, 100, 155, 0.25)', border: '#ec649b', dot: '#ec649b' }
 ];
+
+async function apiFetch(url, options = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers || {})
+  };
+  if (currentUserId) {
+    headers['X-User-Id'] = currentUserId;
+  }
+  return fetch(url, { ...options, headers });
+}
+
+function changeCurrentUser(userId) {
+  currentUserId = userId || '';
+  localStorage.setItem('currentUserId', currentUserId);
+  showToast(userId ? `已切换为用户: ${userId}` : '已切换为匿名用户', 'info');
+  currentDocId = null;
+  currentDocument = null;
+  selectedOldVersion = null;
+  selectedNewVersion = null;
+  currentDiffResult = null;
+  document.getElementById('versionPanel').style.display = 'none';
+  document.getElementById('permissionPanel').style.display = 'none';
+  document.getElementById('auditLogPanel').style.display = 'none';
+  document.getElementById('reviewPanel').style.display = 'none';
+  document.getElementById('patchPanel').style.display = 'none';
+  document.getElementById('diffEmptyState').style.display = 'flex';
+  document.getElementById('diffResultPanel').style.display = 'none';
+  loadDocuments();
+}
+
+const ROLE_LEVELS = {
+  'owner': 3,
+  'editor': 2,
+  'viewer': 1,
+  'public': 0,
+  null: -1
+};
+
+function hasPermission(requiredRole) {
+  const userLevel = ROLE_LEVELS[currentUserRole] ?? -1;
+  const requiredLevel = ROLE_LEVELS[requiredRole] ?? -1;
+  return userLevel >= requiredLevel;
+}
+
+function setButtonDisabled(btn, disabled, reason) {
+  if (!btn) return;
+  btn.disabled = disabled;
+  if (disabled && reason) {
+    btn.title = reason;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'not-allowed';
+  } else {
+    btn.title = '';
+    btn.style.opacity = '';
+    btn.style.cursor = '';
+  }
+}
+
+function initUserSelector() {
+  const selectEl = document.getElementById('currentUserSelect');
+  if (selectEl && currentUserId) {
+    selectEl.value = currentUserId;
+  }
+}
 
 function showToast(message, type = 'info') {
   const toast = document.getElementById('toast');
@@ -63,12 +137,13 @@ function closeModalOutside(event) {
     hideAddCommentModal();
     hideCreatePatchModal();
     hideConflictResolveModal();
+    hideAddCollaboratorModal();
   }
 }
 
 async function loadDocuments() {
   try {
-    const res = await fetch('/api/documents');
+    const res = await apiFetch('/api/documents');
     const docs = await res.json();
     renderDocList(docs);
   } catch (e) {
@@ -104,15 +179,36 @@ async function selectDocument(docId) {
   selectedNewVersion = null;
   
   try {
-    const res = await fetch(`/api/documents/${docId}`);
+    const res = await apiFetch(`/api/documents/${docId}`);
+    if (!res.ok) {
+      const data = await res.json();
+      if (res.status === 403) {
+        showToast('无权限访问此文档: ' + (data.error || '权限不足'), 'error');
+      } else {
+        showToast('加载文档失败: ' + (data.error || res.statusText), 'error');
+      }
+      return;
+    }
     const doc = await res.json();
     currentDocument = doc;
+    currentUserRole = doc.current_user_role;
     
     document.getElementById('versionPanel').style.display = 'block';
     document.getElementById('docTitle').textContent = doc.title;
     
     renderVersionTimeline(doc.versions);
     updateSelectedVersionsDisplay();
+    updateUIByPermissions();
+    
+    await loadPermissions();
+    await loadAuditLogs();
+    loadReviewList();
+    
+    if (currentDocument && currentDocument.versions && currentDocument.versions.length > 0) {
+      const lastVersion = currentDocument.versions[currentDocument.versions.length - 1];
+      loadPatches(lastVersion.version_number);
+    }
+    
     loadDocuments();
   } catch (e) {
     console.error('加载文档失败:', e);
@@ -132,6 +228,11 @@ function renderVersionTimeline(versions) {
       `<span class="version-tag">${escapeHtml(tag)}</span>`
     ).join('');
     
+    const canTag = hasPermission('editor');
+    const canRevert = hasPermission('owner');
+    const tagBtnTitle = canTag ? '添加标签' : '权限不足（需编辑者以上）';
+    const revertBtnTitle = canRevert ? '回退到此版本' : '权限不足（需所有者）';
+    
     return `
       <div class="version-item ${isOld ? 'selected-old' : ''} ${isNew ? 'selected-new' : ''}" 
            onclick="toggleVersionSelection(${v.version_number})"
@@ -142,8 +243,10 @@ function renderVersionTimeline(versions) {
           <div class="version-header">
             <span class="version-number">v${v.version_number}</span>
             <div class="version-actions">
-              <button class="version-action-btn" onclick="event.stopPropagation(); showTagModal(${v.id})" title="添加标签">🏷️</button>
-              <button class="version-action-btn" onclick="event.stopPropagation(); revertToVersion(${v.version_number})" title="回退到此版本">↩️</button>
+              <button class="version-action-btn" onclick="event.stopPropagation(); showTagModal(${v.id})" 
+                title="${tagBtnTitle}" ${canTag ? '' : 'disabled style="opacity:0.4;cursor:not-allowed;"'}>🏷️</button>
+              <button class="version-action-btn" onclick="event.stopPropagation(); revertToVersion(${v.version_number})" 
+                title="${revertBtnTitle}" ${canRevert ? '' : 'disabled style="opacity:0.4;cursor:not-allowed;"'}>↩️</button>
             </div>
           </div>
           ${tagsHtml ? `<div class="version-tags">${tagsHtml}</div>` : ''}
@@ -212,9 +315,18 @@ async function compareVersions() {
   }
 
   try {
-    const res = await fetch(
+    const res = await apiFetch(
       `/api/documents/${currentDocId}/diff?old_version=${selectedOldVersion}&new_version=${selectedNewVersion}`
     );
+    if (!res.ok) {
+      const data = await res.json();
+      if (res.status === 403) {
+        showToast('无权限对比: ' + (data.error || '权限不足'), 'error');
+      } else {
+        showToast('对比失败: ' + (data.error || res.statusText), 'error');
+      }
+      return;
+    }
     const result = await res.json();
     currentDiffResult = result;
     
@@ -327,6 +439,355 @@ function toggleOnlyDiff() {
   }
 }
 
+function updateUIByPermissions() {
+  const editBtn = document.querySelector('#diffResultPanel button[onclick="showEditModal()"]');
+  if (editBtn) {
+    const canEdit = hasPermission('editor');
+    setButtonDisabled(editBtn, !canEdit, canEdit ? '' : '权限不足（需编辑者以上）');
+  }
+  
+  const createReviewBtn = document.getElementById('createReviewBtn');
+  if (createReviewBtn) {
+    const canCreateReview = hasPermission('editor');
+    if (!canCreateReview) {
+      createReviewBtn.disabled = true;
+      createReviewBtn.title = '权限不足（需编辑者以上）';
+      createReviewBtn.style.opacity = '0.5';
+      createReviewBtn.style.cursor = 'not-allowed';
+    } else {
+      createReviewBtn.title = '';
+      createReviewBtn.style.opacity = '';
+      createReviewBtn.style.cursor = '';
+    }
+  }
+  
+  const badgeEl = document.getElementById('currentUserRoleBadge');
+  if (badgeEl) {
+    const roleMap = {
+      'owner': { text: '所有者', class: 'role-owner' },
+      'editor': { text: '编辑者', class: 'role-editor' },
+      'viewer': { text: '只读者', class: 'role-viewer' },
+      'public': { text: '公开访问', class: 'role-public' }
+    };
+    const role = roleMap[currentUserRole] || { text: '未知', class: 'role-viewer' };
+    badgeEl.textContent = role.text;
+    badgeEl.className = `role-badge ${role.class}`;
+  }
+}
+
+async function loadPermissions() {
+  if (!currentDocId) return;
+  
+  try {
+    const res = await apiFetch(`/api/documents/${currentDocId}/permissions`);
+    if (!res.ok) {
+      const data = await res.json();
+      if (res.status !== 403) {
+        showToast('加载权限失败: ' + (data.error || res.statusText), 'error');
+      }
+      return;
+    }
+    const data = await res.json();
+    currentPermissions = data.permissions;
+    canManagePermissions = data.can_manage;
+    currentDocument.is_public = data.is_public;
+    renderPermissions(data);
+  } catch (e) {
+    console.error('加载权限失败:', e);
+  }
+}
+
+function renderPermissions(data) {
+  const panel = document.getElementById('permissionPanel');
+  if (!panel) return;
+  panel.style.display = 'block';
+  
+  const visibilitySection = document.getElementById('docVisibilitySection');
+  const publicToggle = document.getElementById('isPublicToggle');
+  const publicStatusText = document.getElementById('publicStatusText');
+  
+  if (canManagePermissions) {
+    visibilitySection.style.display = 'block';
+    publicToggle.checked = data.is_public === true;
+    publicStatusText.textContent = data.is_public ? '公开' : '私有';
+  } else {
+    visibilitySection.style.display = 'none';
+  }
+  
+  const addBtn = document.getElementById('addCollaboratorBtn');
+  addBtn.style.display = canManagePermissions ? 'block' : 'none';
+  
+  const listEl = document.getElementById('collaboratorsList');
+  
+  if (!currentPermissions || currentPermissions.length === 0) {
+    listEl.innerHTML = '<div class="empty-state-small">暂无协作者</div>';
+    return;
+  }
+  
+  const roleDisplay = {
+    'owner': { text: '所有者', class: 'role-owner', icon: '👑' },
+    'editor': { text: '编辑者', class: 'role-editor', icon: '✏️' },
+    'viewer': { text: '只读者', class: 'role-viewer', icon: '👁️' }
+  };
+  
+  listEl.innerHTML = currentPermissions.map(p => {
+    const role = roleDisplay[p.role] || roleDisplay['viewer'];
+    const isOwner = p.role === 'owner';
+    const canChange = canManagePermissions && !isOwner;
+    
+    return `
+      <div class="collaborator-item">
+        <div class="collaborator-info">
+          <div class="collaborator-avatar">${p.user_name ? p.user_name[0].toUpperCase() : '?'}</div>
+          <div>
+            <div class="collaborator-name">${escapeHtml(p.user_name || p.user_id)}</div>
+            <div class="collaborator-id">${escapeHtml(p.user_id)}</div>
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          ${canChange ? `
+            <select class="collaborator-role-select" onchange="updateCollaboratorRole('${escapeHtml(p.user_id)}', this.value)" ${canChange ? '' : 'disabled'}>
+              <option value="editor" ${p.role === 'editor' ? 'selected' : ''}>编辑者</option>
+              <option value="viewer" ${p.role === 'viewer' ? 'selected' : ''}>只读者</option>
+            </select>
+            <button class="collaborator-remove-btn" onclick="removeCollaborator('${escapeHtml(p.user_id)}')" title="移除协作者">×</button>
+          ` : `
+            <span class="collaborator-role-badge ${role.class}">${role.icon} ${role.text}</span>
+          `}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function toggleDocumentPublic(isPublic) {
+  if (!currentDocId || !canManagePermissions) return;
+  
+  try {
+    const res = await apiFetch(`/api/documents/${currentDocId}/public`, {
+      method: 'PUT',
+      body: JSON.stringify({ is_public: isPublic })
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      showToast('设置失败: ' + (data.error || res.statusText), 'error');
+      const toggle = document.getElementById('isPublicToggle');
+      if (toggle) toggle.checked = !isPublic;
+      return;
+    }
+    
+    document.getElementById('publicStatusText').textContent = isPublic ? '公开' : '私有';
+    showToast(isPublic ? '文档已设为公开' : '文档已设为私有', 'success');
+    await loadAuditLogs();
+  } catch (e) {
+    showToast('设置失败: ' + e.message, 'error');
+  }
+}
+
+function showAddCollaboratorModal() {
+  document.getElementById('newCollaboratorUserId').value = '';
+  document.getElementById('newCollaboratorRole').value = 'editor';
+  document.getElementById('addCollaboratorModal').classList.add('active');
+}
+
+function hideAddCollaboratorModal() {
+  document.getElementById('addCollaboratorModal').classList.remove('active');
+}
+
+async function addCollaborator() {
+  if (!currentDocId) return;
+  
+  const userId = document.getElementById('newCollaboratorUserId').value.trim();
+  const role = document.getElementById('newCollaboratorRole').value;
+  
+  if (!userId) {
+    showToast('请输入用户ID', 'error');
+    return;
+  }
+  
+  try {
+    const res = await apiFetch(`/api/documents/${currentDocId}/permissions`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: userId, role })
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      showToast('添加失败: ' + (data.error || res.statusText), 'error');
+      return;
+    }
+    
+    hideAddCollaboratorModal();
+    showToast('协作者添加成功', 'success');
+    await loadPermissions();
+    await loadAuditLogs();
+  } catch (e) {
+    showToast('添加失败: ' + e.message, 'error');
+  }
+}
+
+async function updateCollaboratorRole(userId, newRole) {
+  if (!currentDocId || !canManagePermissions) return;
+  
+  try {
+    const res = await apiFetch(`/api/documents/${currentDocId}/permissions/${encodeURIComponent(userId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ role: newRole })
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      showToast('修改失败: ' + (data.error || res.statusText), 'error');
+      return;
+    }
+    
+    showToast('角色已更新', 'success');
+    await loadPermissions();
+    await loadAuditLogs();
+  } catch (e) {
+    showToast('修改失败: ' + e.message, 'error');
+  }
+}
+
+async function removeCollaborator(userId) {
+  if (!currentDocId || !canManagePermissions) return;
+  
+  if (!confirm(`确定要移除协作者 ${userId} 吗？`)) return;
+  
+  try {
+    const res = await apiFetch(`/api/documents/${currentDocId}/permissions/${encodeURIComponent(userId)}`, {
+      method: 'DELETE'
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      showToast('移除失败: ' + (data.error || res.statusText), 'error');
+      return;
+    }
+    
+    showToast('协作者已移除', 'success');
+    await loadPermissions();
+    await loadAuditLogs();
+  } catch (e) {
+    showToast('移除失败: ' + e.message, 'error');
+  }
+}
+
+const OPERATION_DISPLAY = {
+  'document_view': { text: '查看文档', icon: '👁️' },
+  'document_create': { text: '创建文档', icon: '📄' },
+  'document_edit': { text: '编辑文档', icon: '✏️' },
+  'document_delete': { text: '删除文档', icon: '🗑️' },
+  'document_revert': { text: '回退版本', icon: '↩️' },
+  'document_public_change': { text: '修改公开状态', icon: '🔓' },
+  'version_view': { text: '查看版本', icon: '📋' },
+  'version_diff': { text: '版本对比', icon: '🔍' },
+  'tag_add': { text: '添加标签', icon: '🏷️' },
+  'permission_add': { text: '添加协作者', icon: '➕' },
+  'permission_remove': { text: '移除协作者', icon: '➖' },
+  'permission_change': { text: '修改权限', icon: '🔧' },
+  'review_create': { text: '创建评审', icon: '📝' },
+  'review_status': { text: '评审状态', icon: '✅' },
+  'comment_add': { text: '添加评论', icon: '💬' },
+  'comment_resolve': { text: '解决评论', icon: '✔️' },
+  'patch_create': { text: '创建补丁', icon: '🔧' },
+  'patch_merge': { text: '合并补丁', icon: '🔀' },
+  'template_render': { text: '渲染模板', icon: '📄' }
+};
+
+const RESULT_DISPLAY = {
+  'success': { text: '成功', class: 'result-success' },
+  'denied': { text: '拒绝', class: 'result-denied' },
+  'failed': { text: '失败', class: 'result-failed' }
+};
+
+function getOperationDisplay(op) {
+  return OPERATION_DISPLAY[op] || { text: op, icon: '📌' };
+}
+
+async function loadAuditLogs(page = 1) {
+  if (!currentDocId) return;
+  
+  try {
+    const res = await apiFetch(`/api/audit-logs/document/${currentDocId}?page=${page}&page_size=20`);
+    if (!res.ok) {
+      if (res.status !== 403) {
+        const data = await res.json();
+        showToast('加载日志失败: ' + (data.error || res.statusText), 'error');
+      }
+      return;
+    }
+    const data = await res.json();
+    
+    if (page === 1) {
+      currentAuditLogs = data.logs || [];
+    } else {
+      currentAuditLogs = [...currentAuditLogs, ...(data.logs || [])];
+    }
+    currentAuditLogPage = page;
+    hasMoreAuditLogs = data.has_more || false;
+    
+    renderAuditLogs();
+  } catch (e) {
+    console.error('加载审计日志失败:', e);
+  }
+}
+
+async function loadMoreAuditLogs() {
+  await loadAuditLogs(currentAuditLogPage + 1);
+}
+
+function renderAuditLogs() {
+  const panel = document.getElementById('auditLogPanel');
+  if (!panel) return;
+  panel.style.display = 'block';
+  
+  const listEl = document.getElementById('auditLogList');
+  
+  if (!currentAuditLogs || currentAuditLogs.length === 0) {
+    listEl.innerHTML = '<div class="empty-state-small">暂无操作记录</div>';
+    return;
+  }
+  
+  listEl.innerHTML = currentAuditLogs.map(log => {
+    const op = getOperationDisplay(log.operation);
+    const result = RESULT_DISPLAY[log.result] || RESULT_DISPLAY['success'];
+    
+    return `
+      <div class="audit-log-item">
+        <div class="audit-log-icon">${op.icon}</div>
+        <div class="audit-log-content">
+          <div class="audit-log-header">
+            <span class="audit-log-operation">${op.text}</span>
+            <span class="audit-log-result ${result.class}">${result.text}</span>
+          </div>
+          <div class="audit-log-meta">
+            <span>${escapeHtml(log.user_name || log.user_id || '匿名用户')}</span>
+            <span class="audit-log-time">${formatDate(log.timestamp)}</span>
+          </div>
+          ${log.error_message ? `<div class="audit-log-error">${escapeHtml(log.error_message)}</div>` : ''}
+          ${log.params_summary ? `<div class="audit-log-params">${escapeHtml(log.params_summary)}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function toggleAuditLogPanel() {
+  const content = document.getElementById('auditLogContent');
+  const icon = document.getElementById('auditLogToggleIcon');
+  auditLogPanelExpanded = !auditLogPanelExpanded;
+  
+  if (auditLogPanelExpanded) {
+    content.style.display = 'block';
+    icon.textContent = '▲';
+  } else {
+    content.style.display = 'none';
+    icon.textContent = '▼';
+  }
+}
+
 function showCreateDocModal() {
   document.getElementById('newDocTitle').value = '';
   document.getElementById('newDocDesc').value = '';
@@ -339,6 +800,11 @@ function hideCreateDocModal() {
 }
 
 async function createDocument() {
+  if (!currentUserId) {
+    showToast('请先登录后再创建文档', 'error');
+    return;
+  }
+  
   const title = document.getElementById('newDocTitle').value.trim();
   const description = document.getElementById('newDocDesc').value.trim();
   const content = document.getElementById('newDocContent').value;
@@ -349,13 +815,15 @@ async function createDocument() {
   }
   
   try {
-    const res = await fetch('/api/documents', {
+    const res = await apiFetch('/api/documents', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, content, description })
     });
     
-    if (!res.ok) throw new Error('创建失败');
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '创建失败');
+    }
     
     const doc = await res.json();
     showToast('文档创建成功', 'success');
@@ -370,6 +838,11 @@ async function createDocument() {
 function showEditModal() {
   if (!currentDocument || currentDocument.versions.length === 0) {
     showToast('没有可编辑的文档', 'error');
+    return;
+  }
+  
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
     return;
   }
   
@@ -392,14 +865,21 @@ async function saveEdit() {
     return;
   }
   
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
   try {
-    const res = await fetch(`/api/documents/${currentDocId}`, {
+    const res = await apiFetch(`/api/documents/${currentDocId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content, commit_message: commitMessage })
     });
     
-    if (!res.ok) throw new Error('保存失败');
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '保存失败');
+    }
     
     const doc = await res.json();
     currentDocument = doc;
@@ -407,6 +887,8 @@ async function saveEdit() {
     showToast('新版本已保存', 'success');
     hideEditModal();
     renderVersionTimeline(doc.versions);
+    loadPermissions();
+    loadAuditLogs();
     loadDocuments();
   } catch (e) {
     showToast('保存失败: ' + e.message, 'error');
@@ -414,6 +896,10 @@ async function saveEdit() {
 }
 
 function showTagModal(versionId) {
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
   currentTagVersionId = versionId;
   document.getElementById('tagNameInput').value = '';
   document.getElementById('tagModal').classList.add('active');
@@ -437,21 +923,29 @@ async function addTag() {
     return;
   }
   
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
   try {
-    const res = await fetch(`/api/documents/${currentDocId}/versions/${currentTagVersionId}/tags`, {
+    const res = await apiFetch(`/api/documents/${currentDocId}/versions/${currentTagVersionId}/tags`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
     });
     
-    if (!res.ok) throw new Error('添加失败');
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '添加失败');
+    }
     
     hideTagModal();
     
-    const docRes = await fetch(`/api/documents/${currentDocId}`);
+    const docRes = await apiFetch(`/api/documents/${currentDocId}`);
     const doc = await docRes.json();
     currentDocument = doc;
     renderVersionTimeline(doc.versions);
+    loadAuditLogs();
     
     showToast('标签添加成功', 'success');
   } catch (e) {
@@ -460,24 +954,33 @@ async function addTag() {
 }
 
 async function revertToVersion(versionNum) {
+  if (!hasPermission('owner')) {
+    showToast('权限不足（需所有者）', 'error');
+    return;
+  }
+  
   if (!confirm(`确定要回退到 v${versionNum} 吗？这将创建一个新版本。`)) {
     return;
   }
   
   try {
-    const res = await fetch(`/api/documents/${currentDocId}/revert/${versionNum}`, {
+    const res = await apiFetch(`/api/documents/${currentDocId}/revert/${versionNum}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({})
     });
     
-    if (!res.ok) throw new Error('回退失败');
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '回退失败');
+    }
     
     const doc = await res.json();
     currentDocument = doc;
     
     showToast(`已回退到 v${versionNum}，生成新版本`, 'success');
     renderVersionTimeline(doc.versions);
+    loadPermissions();
+    loadAuditLogs();
     loadDocuments();
   } catch (e) {
     showToast('回退失败: ' + e.message, 'error');
@@ -580,7 +1083,11 @@ async function loadReviewList() {
   if (!currentDocId) return;
   
   try {
-    const res = await fetch(`/api/documents/${currentDocId}/reviews`);
+    const res = await apiFetch(`/api/documents/${currentDocId}/reviews`);
+    if (!res.ok) {
+      if (res.status === 403) return;
+      throw new Error(res.statusText);
+    }
     const reviews = await res.json();
     renderReviewList(reviews);
   } catch (e) {
@@ -627,7 +1134,7 @@ function renderReviewList(reviews) {
 
 async function joinReview(reviewId) {
   try {
-    const res = await fetch(`/api/reviews/${reviewId}`);
+    const res = await apiFetch(`/api/reviews/${reviewId}`);
     const review = await res.json();
     if (!review) {
       showToast('评审不存在', 'error');
@@ -663,9 +1170,16 @@ async function loadDiffForReview() {
   if (!currentDocId || !currentReview) return;
   
   try {
-    const res = await fetch(
+    const res = await apiFetch(
       `/api/documents/${currentDocId}/diff?old_version=${currentReview.old_version}&new_version=${currentReview.new_version}`
     );
+    if (!res.ok) {
+      const data = await res.json();
+      if (res.status === 403) {
+        showToast('无权限对比: ' + (data.error || '权限不足'), 'error');
+        return;
+      }
+    }
     const result = await res.json();
     currentDiffResult = result;
     renderDiffResult(result);
@@ -679,7 +1193,7 @@ async function loadReviewComments() {
   if (!currentReviewId) return;
   
   try {
-    const res = await fetch(`/api/reviews/${currentReviewId}/comments`);
+    const res = await apiFetch(`/api/reviews/${currentReviewId}/comments`);
     const comments = await res.json();
     reviewComments = comments;
     refreshCommentBubbles();
@@ -740,6 +1254,11 @@ function showCreateReviewModal() {
     return;
   }
   
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
   document.getElementById('reviewOldVersion').textContent = `v${selectedOldVersion}`;
   document.getElementById('reviewNewVersion').textContent = `v${selectedNewVersion}`;
   document.getElementById('reviewTitleInput').value = 
@@ -765,13 +1284,17 @@ async function createReview() {
     return;
   }
   
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
   reviewerName = created_by;
   localStorage.setItem('reviewerName', reviewerName);
   
   try {
-    const res = await fetch(`/api/documents/${currentDocId}/reviews`, {
+    const res = await apiFetch(`/api/documents/${currentDocId}/reviews`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         old_version: selectedOldVersion,
         new_version: selectedNewVersion,
@@ -780,7 +1303,10 @@ async function createReview() {
       })
     });
     
-    if (!res.ok) throw new Error('创建失败');
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '创建失败');
+    }
     
     const review = await res.json();
     hideCreateReviewModal();
@@ -788,6 +1314,7 @@ async function createReview() {
     
     await joinReview(review.id);
     loadReviewList();
+    loadAuditLogs();
   } catch (e) {
     showToast('创建失败: ' + e.message, 'error');
   }
@@ -1171,6 +1698,7 @@ function renderLine(type, lineNum, content, charDiff = null, side = null) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  initUserSelector();
   loadDocuments();
   connectWebSocket();
   
@@ -1190,7 +1718,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function selectDocumentFromReview(reviewId) {
   try {
-    const res = await fetch(`/api/reviews/${reviewId}`);
+    const res = await apiFetch(`/api/reviews/${reviewId}`);
     const review = await res.json();
     if (!review) {
       showToast('评审不存在', 'error');
@@ -1199,13 +1727,26 @@ async function selectDocumentFromReview(reviewId) {
     
     currentDocId = review.document_id;
     
-    const docRes = await fetch(`/api/documents/${review.document_id}`);
+    const docRes = await apiFetch(`/api/documents/${review.document_id}`);
+    if (!docRes.ok) {
+      const data = await docRes.json();
+      if (docRes.status === 403) {
+        showToast('无权限访问此文档: ' + (data.error || '权限不足'), 'error');
+      } else {
+        showToast('加载文档失败: ' + (data.error || docRes.statusText), 'error');
+      }
+      return;
+    }
     const doc = await docRes.json();
     currentDocument = doc;
+    currentUserRole = doc.current_user_role;
     
     document.getElementById('versionPanel').style.display = 'block';
     document.getElementById('docTitle').textContent = doc.title;
     renderVersionTimeline(doc.versions);
+    updateUIByPermissions();
+    loadPermissions();
+    loadAuditLogs();
     loadDocuments();
     loadReviewList();
     
@@ -1231,11 +1772,19 @@ async function loadPatches(versionNumber) {
   patchAuthorColors = {};
   
   try {
-    const res = await fetch(`/api/documents/${currentDocId}/patches?version=${versionNumber}`);
+    const res = await apiFetch(`/api/documents/${currentDocId}/patches?version=${versionNumber}`);
+    if (!res.ok) {
+      if (res.status === 403) return;
+      throw new Error(res.statusText);
+    }
     currentPatches = await res.json();
     
-    const conflictRes = await fetch(`/api/documents/${currentDocId}/conflicts?version=${versionNumber}`);
-    currentConflicts = await conflictRes.json();
+    const conflictRes = await apiFetch(`/api/documents/${currentDocId}/conflicts?version=${versionNumber}`);
+    if (!conflictRes.ok) {
+      currentConflicts = [];
+    } else {
+      currentConflicts = await conflictRes.json();
+    }
     
     currentPatches.forEach(p => getAuthorColor(p.created_by));
     
@@ -1421,6 +1970,11 @@ function showCreatePatchModal() {
     return;
   }
   
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
   const version = currentPatchVersion || (currentDocument && currentDocument.versions.length > 0 
     ? currentDocument.versions[currentDocument.versions.length - 1].version_number 
     : 1);
@@ -1458,6 +2012,11 @@ async function submitPatch() {
     return;
   }
   
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
   reviewerName = created_by;
   localStorage.setItem('reviewerName', reviewerName);
   
@@ -1466,9 +2025,8 @@ async function submitPatch() {
     : 1);
   
   try {
-    const res = await fetch(`/api/documents/${currentDocId}/patches`, {
+    const res = await apiFetch(`/api/documents/${currentDocId}/patches`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         start_line,
         end_line,
@@ -1488,6 +2046,7 @@ async function submitPatch() {
     hideCreatePatchModal();
     showToast('补丁提交成功', 'success');
     await loadPatches(version);
+    await loadAuditLogs();
     
     if (currentDiffResult) {
       renderDiffContent(currentDiffResult.diff);
@@ -1498,17 +2057,25 @@ async function submitPatch() {
 }
 
 async function acceptPatch(patchId) {
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
   try {
-    const res = await fetch(`/api/patches/${patchId}/status`, {
+    const res = await apiFetch(`/api/patches/${patchId}/status`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'accepted' })
     });
     
-    if (!res.ok) throw new Error('操作失败');
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '操作失败');
+    }
     
     showToast('已采纳该补丁', 'success');
     await loadPatches(currentPatchVersion);
+    await loadAuditLogs();
     
     if (currentDiffResult) {
       renderDiffContent(currentDiffResult.diff);
@@ -1519,17 +2086,25 @@ async function acceptPatch(patchId) {
 }
 
 async function rejectPatch(patchId) {
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
   try {
-    const res = await fetch(`/api/patches/${patchId}/status`, {
+    const res = await apiFetch(`/api/patches/${patchId}/status`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'rejected' })
     });
     
-    if (!res.ok) throw new Error('操作失败');
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '操作失败');
+    }
     
     showToast('已拒绝该补丁', 'success');
     await loadPatches(currentPatchVersion);
+    await loadAuditLogs();
     
     if (currentDiffResult) {
       renderDiffContent(currentDiffResult.diff);

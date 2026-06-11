@@ -52,6 +52,12 @@ function now() {
 function listDocuments() {
   loadData();
   return data.documents.map(doc => {
+    if (doc.is_public === undefined) {
+      doc.is_public = false;
+    }
+    if (doc.owner_id === undefined) {
+      doc.owner_id = null;
+    }
     const versions = data.versions.filter(v => v.document_id === doc.id);
     const latestVersion = versions[versions.length - 1];
     return {
@@ -70,6 +76,13 @@ function getDocumentById(id, { reload = true } = {}) {
   const doc = data.documents.find(d => d.id === id);
   if (!doc) return null;
 
+  if (doc.is_public === undefined) {
+    doc.is_public = false;
+  }
+  if (doc.owner_id === undefined) {
+    doc.owner_id = null;
+  }
+
   const versions = data.versions
     .filter(v => v.document_id === id)
     .sort((a, b) => a.version_number - b.version_number);
@@ -85,13 +98,15 @@ function getDocumentById(id, { reload = true } = {}) {
   };
 }
 
-function createDocument({ title, content, description = '' }) {
+function createDocument({ title, content, description = '', owner_id = null, is_public = false }) {
   loadData();
   
   const doc = {
     id: data.nextDocId++,
     title,
     description,
+    owner_id,
+    is_public: is_public === true,
     created_at: now()
   };
 
@@ -255,6 +270,19 @@ function revertToVersion(documentId, versionNumber, commit_message = '') {
   return getDocumentById(documentId);
 }
 
+function setDocumentPublic(documentId, isPublic) {
+  loadData();
+  
+  const doc = data.documents.find(d => d.id === documentId);
+  if (!doc) return null;
+
+  doc.is_public = isPublic === true;
+  doc.updated_at = now();
+  saveData();
+
+  return getDocumentById(documentId);
+}
+
 loadData();
 
 module.exports = {
@@ -269,6 +297,7 @@ module.exports = {
   removeTag,
   getTagsByDocument,
   revertToVersion,
+  setDocumentPublic,
   saveData: saveData,
   loadData: loadData
 };

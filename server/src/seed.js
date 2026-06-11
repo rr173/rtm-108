@@ -3,6 +3,8 @@ const { createDocument, updateDocument, addTag, listDocuments } = require('./doc
 const { createReview, addComment, resolveComment, listReviewsByDocument } = require('./reviewService');
 const { createPatch, listPatchesByDocument } = require('./patchService');
 const { createTemplate, listTemplates } = require('./templateService');
+const { setOwner, addCollaborator } = require('./permissionService');
+const { createLog, OPERATION_TYPES, RESULT_TYPES } = require('./auditService');
 
 function seedDemoData() {
   const existingContracts = listContracts();
@@ -224,6 +226,91 @@ function seedDocumentData() {
   console.log('已更新到 v3，新增内容：用户定位、导出功能、团队扩展、风险评估');
   console.log('已添加标签：v3=发布版');
   console.log('演示文档初始化完成，共 3 个版本');
+
+  console.log('初始化权限配置...');
+  setOwner(doc.id, 'user-admin');
+  addCollaborator(doc.id, 'user-editor', 'editor', 'system-init');
+  addCollaborator(doc.id, 'user-viewer', 'viewer', 'system-init');
+  console.log('权限配置完成：所有者=user-admin，编辑者=user-editor，只读用户=user-viewer');
+
+  console.log('初始化审计日志...');
+  const now = Date.now();
+  const baseTime = now - 7 * 24 * 60 * 60 * 1000;
+
+  createLog({
+    userId: 'user-admin',
+    operation: OPERATION_TYPES.DOCUMENT_CREATE,
+    documentId: doc.id,
+    result: RESULT_TYPES.SUCCESS,
+    params: { title: doc.title, version: 1 }
+  });
+  createLog({
+    userId: 'user-admin',
+    operation: OPERATION_TYPES.DOCUMENT_EDIT,
+    documentId: doc.id,
+    result: RESULT_TYPES.SUCCESS,
+    params: { from_version: 1, to_version: 2, commit_message: '完善功能列表，增加技术栈和里程碑' }
+  });
+  createLog({
+    userId: 'user-admin',
+    operation: OPERATION_TYPES.DOCUMENT_EDIT,
+    documentId: doc.id,
+    result: RESULT_TYPES.SUCCESS,
+    params: { from_version: 2, to_version: 3, commit_message: '增加用户定位、导出功能、风险评估，调整周期和团队' }
+  });
+  createLog({
+    userId: 'user-admin',
+    operation: OPERATION_TYPES.TAG_ADD,
+    documentId: doc.id,
+    result: RESULT_TYPES.SUCCESS,
+    params: { tag: '初稿', version: 1 }
+  });
+  createLog({
+    userId: 'user-admin',
+    operation: OPERATION_TYPES.TAG_ADD,
+    documentId: doc.id,
+    result: RESULT_TYPES.SUCCESS,
+    params: { tag: '评审稿', version: 2 }
+  });
+  createLog({
+    userId: 'user-editor',
+    operation: OPERATION_TYPES.DOCUMENT_VIEW,
+    documentId: doc.id,
+    result: RESULT_TYPES.SUCCESS,
+    params: { action: 'view_document' }
+  });
+  createLog({
+    userId: 'user-viewer',
+    operation: OPERATION_TYPES.DOCUMENT_VIEW,
+    documentId: doc.id,
+    result: RESULT_TYPES.SUCCESS,
+    params: { action: 'view_document' }
+  });
+  createLog({
+    userId: 'user-viewer',
+    operation: OPERATION_TYPES.DOCUMENT_EDIT,
+    documentId: doc.id,
+    result: RESULT_TYPES.DENIED,
+    params: { action: 'attempt_edit' },
+    errorMessage: '需要 editor 以上权限'
+  });
+  createLog({
+    userId: 'user-viewer',
+    operation: OPERATION_TYPES.DOCUMENT_REVERT,
+    documentId: doc.id,
+    result: RESULT_TYPES.DENIED,
+    params: { revert_to: 1 },
+    errorMessage: '需要 owner 以上权限'
+  });
+  createLog({
+    userId: 'user-editor',
+    operation: OPERATION_TYPES.VERSION_DIFF,
+    documentId: doc.id,
+    result: RESULT_TYPES.SUCCESS,
+    params: { old_version: 1, new_version: 3 }
+  });
+
+  console.log('审计日志初始化完成，共写入 10 条历史操作记录');
 
   seedReviewData(doc.id);
 }

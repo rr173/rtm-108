@@ -12,11 +12,21 @@
     <div class="container" style="display: flex; justify-content: space-between; align-items: center;">
       <div>
         <h1>📄 文档版本对比工具</h1>
-        <p>逐行差异计算 · 版本管理 · 标签系统</p>
+        <p>逐行差异计算 · 版本管理 · 标签系统 · 权限控制 · 审计日志</p>
       </div>
-      <div style="display: flex; gap: 10px;">
+      <div style="display: flex; gap: 10px; align-items: center;">
+        <div class="user-selector">
+          <label style="font-size: 13px; color: #fff; margin-right: 6px;">当前用户:</label>
+          <select id="currentUserSelect" onchange="changeCurrentUser(this.value)" style="padding: 6px 10px; border-radius: 6px; border: none; font-size: 13px;">
+            <option value="">匿名用户</option>
+            <option value="user-admin">user-admin (管理员)</option>
+            <option value="user-editor">user-editor (编辑者)</option>
+            <option value="user-viewer">user-viewer (只读)</option>
+            <option value="user-other">user-other (其他)</option>
+          </select>
+        </div>
         <a href="/" class="btn btn-secondary">返回首页</a>
-        <button class="btn btn-primary" onclick="showCreateDocModal()">+ 新建文档</button>
+        <button id="createDocBtn" class="btn btn-primary" onclick="showCreateDocModal()">+ 新建文档</button>
       </div>
     </div>
   </div>
@@ -52,6 +62,45 @@
           <button id="createReviewBtn" class="btn btn-success btn-sm" style="width: 100%; margin-top: 8px;" onclick="showCreateReviewModal()" disabled>
             📝 创建评审
           </button>
+        </div>
+      </div>
+
+      <div id="permissionPanel" class="sidebar-section" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h3 style="margin: 0; font-size: 15px;">🔐 权限管理</h3>
+          <span id="currentUserRoleBadge" class="role-badge"></span>
+        </div>
+        <div id="docVisibilitySection" style="margin-bottom: 12px; padding: 8px 10px; background: #f8f9fa; border-radius: 6px; font-size: 13px; display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span>文档可见性：</span>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" id="isPublicToggle" onchange="toggleDocumentPublic(this.checked)">
+              <span id="publicStatusText">私有</span>
+            </label>
+          </div>
+        </div>
+        <div id="collaboratorsList" class="collaborators-list">
+          <div class="empty-state-small">加载中...</div>
+        </div>
+        <div style="margin-top: 12px;">
+          <button id="addCollaboratorBtn" class="btn btn-primary btn-sm" style="width: 100%; display: none;" onclick="showAddCollaboratorModal()">
+            + 添加协作者
+          </button>
+        </div>
+      </div>
+
+      <div id="auditLogPanel" class="sidebar-section" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; cursor: pointer;" onclick="toggleAuditLogPanel()">
+          <h3 style="margin: 0; font-size: 15px;">📋 操作日志</h3>
+          <span id="auditLogToggleIcon" class="toggle-icon">▼</span>
+        </div>
+        <div id="auditLogContent" style="display: none;">
+          <div id="auditLogList" class="audit-log-list">
+            <div class="empty-state-small">加载中...</div>
+          </div>
+          <div style="margin-top: 8px; text-align: center;">
+            <button class="btn btn-secondary btn-sm" onclick="loadMoreAuditLogs()">加载更多</button>
+          </div>
         </div>
       </div>
 
@@ -307,6 +356,34 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="hideCreatePatchModal()">取消</button>
         <button class="btn btn-primary" onclick="submitPatch()">提交补丁</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="addCollaboratorModal" class="modal-overlay" onclick="closeModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width: 450px;">
+      <h3 class="modal-title">添加协作者</h3>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">用户ID</label>
+        <input type="text" id="newCollaboratorUserId" placeholder="如：user-xxx"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">角色</label>
+        <select id="newCollaboratorRole" style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+          <option value="editor">编辑者（可编辑内容）</option>
+          <option value="viewer">只读者（仅可查看）</option>
+        </select>
+      </div>
+      <div style="margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 8px; font-size: 12px; color: #666; line-height: 1.6;">
+        <div style="font-weight: 600; margin-bottom: 6px; color: #333;">角色权限说明：</div>
+        <div>👁️ <b>只读者</b>：查看文档详情和版本列表</div>
+        <div>✏️ <b>编辑者</b>：编辑文档内容、添加版本、打标签</div>
+        <div>👑 <b>所有者</b>：全部操作权限（删除文档、修改权限、回退版本）</div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideAddCollaboratorModal()">取消</button>
+        <button class="btn btn-primary" onclick="addCollaborator()">添加</button>
       </div>
     </div>
   </div>

@@ -1226,3 +1226,265 @@
     width: 100%;
   }
 }
+
+.role-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.role-owner {
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+}
+
+.role-editor {
+  background: linear-gradient(135deg, #51cf66, #40c057);
+  color: white;
+}
+
+.role-viewer {
+  background: linear-gradient(135deg, #74c0fc, #4dabf7);
+  color: white;
+}
+
+.role-public {
+  background: linear-gradient(135deg, #ffd43b, #fab005);
+  color: #5c3d00;
+}
+
+.collaborators-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.collaborator-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.collaborator-item:hover {
+  background: #eef2ff;
+}
+
+.collaborator-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.collaborator-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.collaborator-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: #1a1a2e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collaborator-id {
+  font-size: 11px;
+  color: #999;
+}
+
+.collaborator-role-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.collaborator-role-select {
+  padding: 4px 8px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 12px;
+  background: white;
+  cursor: pointer;
+}
+
+.collaborator-role-select:focus {
+  outline: none;
+  border-color: #667eea;
+}
+
+.collaborator-remove-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: #ffe3e3;
+  color: #c92a2a;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.collaborator-remove-btn:hover {
+  background: #ff8787;
+  color: white;
+}
+
+.toggle-icon {
+  font-size: 12px;
+  color: #667eea;
+  transition: transform 0.2s;
+}
+
+.audit-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.audit-log-item {
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  transition: all 0.2s;
+}
+
+.audit-log-item:hover {
+  background: #eef2ff;
+}
+
+.audit-log-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.audit-log-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.audit-log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.audit-log-operation {
+  font-weight: 600;
+  font-size: 13px;
+  color: #1a1a2e;
+}
+
+.audit-log-result {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.result-success {
+  background: #d3f9d8;
+  color: #2b8a3e;
+}
+
+.result-denied {
+  background: #ffe3e3;
+  color: #c92a2a;
+}
+
+.result-failed {
+  background: #fff3bf;
+  color: #9c6b00;
+}
+
+.audit-log-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: #888;
+}
+
+.audit-log-time {
+  color: #999;
+}
+
+.audit-log-error {
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: #fff5f5;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #c92a2a;
+  border-left: 2px solid #ff8787;
+}
+
+.audit-log-params {
+  margin-top: 4px;
+  padding: 4px 8px;
+  background: white;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #666;
+  font-family: 'SF Mono', 'Monaco', monospace;
+  word-break: break-all;
+}
+
+.user-selector {
+  display: flex;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.15);
+  padding: 6px 12px;
+  border-radius: 8px;
+}
+
+.user-selector select {
+  background: white;
+  color: #333;
+  min-width: 160px;
+  cursor: pointer;
+}
+
+.user-selector select:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.3);
+}

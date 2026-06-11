@@ -4,6 +4,7 @@ const path = require('path');
 const cors = require('cors');
 const WsService = require('./wsService');
 const seedDemoData = require('./seed');
+
 const {
   getContractById,
   listContracts,
@@ -19,6 +20,7 @@ const {
   checkAndGenerateDeadlineWarnings,
   checkAndUpdateExpiredContracts
 } = require('./contractService');
+
 const {
   listDocuments,
   getDocumentById,
@@ -29,8 +31,10 @@ const {
   diffVersions,
   addTag,
   removeTag,
-  revertToVersion
+  revertToVersion,
+  setDocumentPublic
 } = require('./documentService');
+
 const {
   createReview,
   getReviewById,
@@ -45,6 +49,7 @@ const {
   deleteComment,
   checkAllResolved
 } = require('./reviewService');
+
 const {
   createPatch,
   getPatchById,
@@ -57,6 +62,7 @@ const {
   mergePatches,
   getPatchStats
 } = require('./patchService');
+
 const {
   listTemplates,
   getTemplateById,
@@ -67,7 +73,32 @@ const {
   renderTemplateById,
   batchGenerateDocuments
 } = require('./templateService');
+
 const { renderTemplate, extractVariables } = require('./templateEngine');
+
+const {
+  ROLES,
+  checkPermission,
+  getUserRoleForDocument,
+  getPermissionDetailsForDocument,
+  addCollaborator,
+  updateCollaboratorRole,
+  removeCollaborator,
+  setOwner,
+  hasAtLeastRole,
+  deleteDocumentPermissions,
+  getUserName
+} = require('./permissionService');
+
+const {
+  OPERATION_TYPES,
+  RESULT_TYPES,
+  createLog,
+  getLogsByDocument,
+  getLogsByUser,
+  getAllLogs,
+  verifyLogIntegrity
+} = require('./auditService');
 
 const app = express();
 const server = http.createServer(app);
@@ -77,61 +108,339 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-app.get('/api/documents', (req, res) => {
-  try {
-    const documents = listDocuments();
-    res.json(documents);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+function getCurrentUser(req) {
+  const userId = req.headers['x-user-id'] || null;
+  return {
+    userId,
+    userName: userId ? getUserName(userId) : '匿名用户'
+  };
+}
 
-app.get('/api/documents/:id', (req, res) => {
-  try {
-    const doc = getDocumentById(parseInt(req.params.id));
+function authMiddleware(req, res, next) {
+  const { userId, userName } = getCurrentUser(req);
+  req.currentUser = { id: userId, name: userName };
+  next();
+}
+
+app.use(authMiddleware);
+
+function requireDocPermission(requiredRole) {
+  return (req, res, next) => {
+    const docId = parseInt(req.params.id || req.params.documentId);
+    const userId = req.currentUser.id;
+
+    if (isNaN(docId)) {
+      return res.status(400).json({ error: '无效的文档ID' });
+    }
+
+    const doc = getDocumentById(docId, { reload: false });
     if (!doc) {
+      createLog({
+        userId,
+        operation: OPERATION_TYPES.DOCUMENT_VIEW,
+        documentId: docId,
+        result: RESULT_TYPES.FAILED,
+        params: { doc_id: docId },
+        errorMessage: '文档不存在'
+      });
       return res.status(404).json({ error: '文档不存在' });
     }
-    res.json(doc);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
-app.post('/api/documents', (req, res) => {
-  try {
-    const { title, content, description } = req.body;
-    if (!title || content === undefined) {
-      return res.status(400).json({ error: '缺少必要参数' });
-    }
-    const doc = createDocument({ title, content, description });
-    res.status(201).json(doc);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+    const permissionResult = checkPermission(docId, userId, requiredRole, doc.is_public);
 
-app.put('/api/documents/:id', (req, res) => {
-  try {
-    const { content, commit_message } = req.body;
-    if (content === undefined) {
-      return res.status(400).json({ error: '缺少内容参数' });
+    if (!permissionResult.allowed) {
+      createLog({
+        userId,
+        operation: requiredRole === ROLES.VIEWER ? OPERATION_TYPES.DOCUMENT_VIEW : OPERATION_TYPES.DOCUMENT_EDIT,
+        documentId: docId,
+        result: RESULT_TYPES.DENIED,
+        params: { doc_id: docId, required_role: requiredRole, actual_role: permissionResult.role },
+        errorMessage: permissionResult.reason || '权限不足'
+      });
+      return res.status(403).json({
+        error: permissionResult.reason || '权限不足',
+        permission_required: requiredRole,
+        user_role: permissionResult.role
+      });
     }
-    const doc = updateDocument(parseInt(req.params.id), { content, commit_message });
-    if (!doc) {
-      return res.status(404).json({ error: '文档不存在' });
-    }
-    res.json(doc);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
 
-app.delete('/api/documents/:id', (req, res) => {
+    req._permissionChecked = true;
+    req._documentExists = true;
+    req._document = doc;
+    req._userRole = permissionResult.role;
+    next();
+  };
+}
+
+function logAudit(operation, options = {}) {
+  return (req, res, next) => {
+    const userId = req.currentUser.id;
+    const docId = options.getDocumentId ? options.getDocumentId(req) : (parseInt(req.params.id || req.params.documentId) || null);
+    const params = options.getParams ? options.getParams(req) : {
+      query: req.query,
+      body: Object.keys(req.body || {}).length > 0 ? req.body : undefined
+    };
+
+    const originalSend = res.send.bind(res);
+    res.send = (data) => {
+      let result = RESULT_TYPES.SUCCESS;
+      let errorMessage = null;
+
+      if (res.statusCode === 403) {
+        result = RESULT_TYPES.DENIED;
+        if (data && typeof data === 'object' && data.error) {
+          errorMessage = data.error;
+        }
+      } else if (res.statusCode >= 400) {
+        result = RESULT_TYPES.FAILED;
+        if (data && typeof data === 'object' && data.error) {
+          errorMessage = data.error;
+        }
+      }
+
+      if (!req._auditLogged) {
+        try {
+          createLog({
+            userId,
+            operation,
+            documentId: docId,
+            result,
+            params,
+            errorMessage
+          });
+        } catch (e) {
+          console.error('写入审计日志失败:', e);
+        }
+        req._auditLogged = true;
+      }
+
+      return originalSend(data);
+    };
+
+    next();
+  };
+}
+
+function listDocumentsFiltered(userId) {
+  const allDocs = listDocuments();
+  return allDocs.filter(doc => {
+    if (doc.is_public) return true;
+    if (!userId) return false;
+    const role = getUserRoleForDocument(doc.id, userId);
+    return role !== null;
+  });
+}
+
+// ============ 文档相关 API ============
+
+app.get(
+  '/api/documents',
+  logAudit(OPERATION_TYPES.DOCUMENT_VIEW, {
+    getDocumentId: () => null,
+    getParams: () => ({ action: 'list' })
+  }),
+  (req, res) => {
+    try {
+      const userId = req.currentUser.id;
+      const documents = listDocumentsFiltered(userId);
+      res.json(documents);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id',
+  logAudit(OPERATION_TYPES.DOCUMENT_VIEW),
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const doc = req._document;
+      const userId = req.currentUser.id;
+      const userRole = req._userRole;
+      res.json({
+        ...doc,
+        current_user_role: userRole,
+        current_user_id: userId
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents',
+  logAudit(OPERATION_TYPES.DOCUMENT_CREATE, {
+    getDocumentId: (req) => req._createdDocId,
+    getParams: (req) => ({ title: req.body?.title })
+  }),
+  (req, res) => {
+    try {
+      const { title, content, description, is_public } = req.body;
+      if (!title || content === undefined) {
+        return res.status(400).json({ error: '缺少必要参数' });
+      }
+      const ownerId = req.currentUser.id;
+      const doc = createDocument({
+        title,
+        content,
+        description,
+        owner_id: ownerId,
+        is_public: is_public === true
+      });
+
+      if (ownerId) {
+        setOwner(doc.id, ownerId);
+      }
+
+      req._createdDocId = doc.id;
+      res.status(201).json(doc);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put(
+  '/api/documents/:id',
+  logAudit(OPERATION_TYPES.DOCUMENT_EDIT, {
+    getParams: (req) => ({ commit_message: req.body?.commit_message })
+  }),
+  requireDocPermission(ROLES.EDITOR),
+  (req, res) => {
+    try {
+      const { content, commit_message } = req.body;
+      if (content === undefined) {
+        return res.status(400).json({ error: '缺少内容参数' });
+      }
+      const doc = updateDocument(parseInt(req.params.id), { content, commit_message });
+      if (!doc) {
+        return res.status(404).json({ error: '文档不存在' });
+      }
+      res.json(doc);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.delete(
+  '/api/documents/:id',
+  logAudit(OPERATION_TYPES.DOCUMENT_DELETE),
+  requireDocPermission(ROLES.OWNER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      deleteDocumentPermissions(docId);
+      const success = deleteDocument(docId);
+      if (!success) {
+        return res.status(404).json({ error: '文档不存在' });
+      }
+      res.json({ success: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/versions/:version',
+  logAudit(OPERATION_TYPES.VERSION_VIEW),
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const version = getVersion(parseInt(req.params.id), parseInt(req.params.version));
+      if (!version) {
+        return res.status(404).json({ error: '版本不存在' });
+      }
+      res.json(version);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/diff',
+  logAudit(OPERATION_TYPES.VERSION_DIFF, {
+    getParams: (req) => ({ old_version: req.query.old_version, new_version: req.query.new_version })
+  }),
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const { old_version, new_version } = req.query;
+      if (!old_version || !new_version) {
+        return res.status(400).json({ error: '缺少版本参数' });
+      }
+      const result = diffVersions(
+        parseInt(req.params.id),
+        parseInt(old_version),
+        parseInt(new_version)
+      );
+      if (!result) {
+        return res.status(404).json({ error: '版本不存在' });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents/:id/revert/:version',
+  logAudit(OPERATION_TYPES.DOCUMENT_REVERT, {
+    getParams: (req) => ({ revert_to_version: req.params.version })
+  }),
+  requireDocPermission(ROLES.OWNER),
+  (req, res) => {
+    try {
+      const { commit_message } = req.body;
+      const result = revertToVersion(
+        parseInt(req.params.id),
+        parseInt(req.params.version),
+        commit_message
+      );
+      if (!result) {
+        return res.status(404).json({ error: '文档或版本不存在' });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents/:id/versions/:versionId/tags',
+  logAudit(OPERATION_TYPES.TAG_ADD, {
+    getParams: (req) => ({ tag_name: req.body?.name, version_id: req.params.versionId })
+  }),
+  requireDocPermission(ROLES.EDITOR),
+  (req, res) => {
+    try {
+      const { name } = req.body;
+      if (!name) {
+        return res.status(400).json({ error: '缺少标签名称' });
+      }
+      const tag = addTag(parseInt(req.params.id), parseInt(req.params.versionId), name);
+      if (!tag) {
+        return res.status(404).json({ error: '文档或版本不存在' });
+      }
+      res.status(201).json(tag);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.delete('/api/tags/:tagId', (req, res) => {
   try {
-    const success = deleteDocument(parseInt(req.params.id));
+    const success = removeTag(parseInt(req.params.tagId));
     if (!success) {
-      return res.status(404).json({ error: '文档不存在' });
+      return res.status(404).json({ error: '标签不存在' });
     }
     res.json({ success: true });
   } catch (e) {
@@ -139,69 +448,49 @@ app.delete('/api/documents/:id', (req, res) => {
   }
 });
 
-app.get('/api/documents/:id/versions/:version', (req, res) => {
-  try {
-    const version = getVersion(parseInt(req.params.id), parseInt(req.params.version));
-    if (!version) {
-      return res.status(404).json({ error: '版本不存在' });
-    }
-    res.json(version);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// ============ 评审 API ============
 
-app.get('/api/documents/:id/diff', (req, res) => {
-  try {
-    const { old_version, new_version } = req.query;
-    if (!old_version || !new_version) {
-      return res.status(400).json({ error: '缺少版本参数' });
+app.get(
+  '/api/documents/:id/reviews',
+  logAudit(OPERATION_TYPES.REVIEW_CREATE, {
+    getParams: () => ({ action: 'list_reviews' })
+  }),
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const reviews = listReviewsByDocument(parseInt(req.params.id));
+      res.json(reviews);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
     }
-    const result = diffVersions(
-      parseInt(req.params.id),
-      parseInt(old_version),
-      parseInt(new_version)
-    );
-    if (!result) {
-      return res.status(404).json({ error: '版本不存在' });
-    }
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
-});
+);
 
-app.get('/api/documents/:id/reviews', (req, res) => {
-  try {
-    const reviews = listReviewsByDocument(parseInt(req.params.id));
-    res.json(reviews);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/documents/:id/reviews', (req, res) => {
-  try {
-    const { old_version, new_version, title, created_by } = req.body;
-    if (!old_version || !new_version) {
-      return res.status(400).json({ error: '缺少版本参数' });
+app.post(
+  '/api/documents/:id/reviews',
+  logAudit(OPERATION_TYPES.REVIEW_CREATE, {
+    getParams: (req) => ({ review_title: req.body?.title, old_version: req.body?.old_version, new_version: req.body?.new_version })
+  }),
+  requireDocPermission(ROLES.EDITOR),
+  (req, res) => {
+    try {
+      const { old_version, new_version, title, created_by } = req.body;
+      if (!old_version || !new_version) {
+        return res.status(400).json({ error: '缺少版本参数' });
+      }
+      const review = createReview({
+        document_id: parseInt(req.params.id),
+        old_version: parseInt(old_version),
+        new_version: parseInt(new_version),
+        title,
+        created_by: created_by || req.currentUser.name
+      });
+      res.status(201).json(review);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
     }
-    const doc = getDocumentById(parseInt(req.params.id));
-    if (!doc) {
-      return res.status(404).json({ error: '文档不存在' });
-    }
-    const review = createReview({
-      document_id: parseInt(req.params.id),
-      old_version: parseInt(old_version),
-      new_version: parseInt(new_version),
-      title,
-      created_by
-    });
-    res.status(201).json(review);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
-});
+);
 
 app.get('/api/reviews/:id', (req, res) => {
   try {
@@ -215,22 +504,28 @@ app.get('/api/reviews/:id', (req, res) => {
   }
 });
 
-app.put('/api/reviews/:id/status', (req, res) => {
-  try {
-    const { status } = req.body;
-    if (!['pending', 'approved', 'rejected'].includes(status)) {
-      return res.status(400).json({ error: '无效的状态值' });
+app.put(
+  '/api/reviews/:id/status',
+  logAudit(OPERATION_TYPES.REVIEW_STATUS, {
+    getParams: (req) => ({ status: req.body?.status })
+  }),
+  (req, res) => {
+    try {
+      const { status } = req.body;
+      if (!['pending', 'approved', 'rejected'].includes(status)) {
+        return res.status(400).json({ error: '无效的状态值' });
+      }
+      const review = updateReviewStatus(parseInt(req.params.id), status);
+      if (!review) {
+        return res.status(404).json({ error: '评审不存在' });
+      }
+      wsService.notifyReviewUpdate(review.id, 'review_status_updated');
+      res.json(review);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
     }
-    const review = updateReviewStatus(parseInt(req.params.id), status);
-    if (!review) {
-      return res.status(404).json({ error: '评审不存在' });
-    }
-    wsService.notifyReviewUpdate(review.id, 'review_status_updated');
-    res.json(review);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
-});
+);
 
 app.delete('/api/reviews/:id', (req, res) => {
   try {
@@ -253,50 +548,62 @@ app.get('/api/reviews/:id/comments', (req, res) => {
   }
 });
 
-app.post('/api/reviews/:id/comments', (req, res) => {
-  try {
-    const { old_line, new_line, content, author, parent_id } = req.body;
-    if (!content) {
-      return res.status(400).json({ error: '评论内容不能为空' });
+app.post(
+  '/api/reviews/:id/comments',
+  logAudit(OPERATION_TYPES.COMMENT_ADD, {
+    getParams: (req) => ({ review_id: req.params.id, has_parent: !!req.body?.parent_id })
+  }),
+  (req, res) => {
+    try {
+      const { old_line, new_line, content, author, parent_id } = req.body;
+      if (!content) {
+        return res.status(400).json({ error: '评论内容不能为空' });
+      }
+      const comment = addComment({
+        review_id: parseInt(req.params.id),
+        old_line: old_line !== undefined ? parseInt(old_line) : null,
+        new_line: new_line !== undefined ? parseInt(new_line) : null,
+        content,
+        author: author || req.currentUser.name,
+        parent_id: parent_id ? parseInt(parent_id) : null
+      });
+      if (!comment) {
+        return res.status(404).json({ error: '评审或父评论不存在' });
+      }
+      wsService.notifyReviewComment(parseInt(req.params.id), comment, 'new_comment');
+      const review = getReviewById(parseInt(req.params.id));
+      if (review) {
+        wsService.notifyReviewUpdate(review.id, 'review_updated');
+      }
+      res.status(201).json(comment);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
     }
-    const comment = addComment({
-      review_id: parseInt(req.params.id),
-      old_line: old_line !== undefined ? parseInt(old_line) : null,
-      new_line: new_line !== undefined ? parseInt(new_line) : null,
-      content,
-      author: author || '匿名用户',
-      parent_id: parent_id ? parseInt(parent_id) : null
-    });
-    if (!comment) {
-      return res.status(404).json({ error: '评审或父评论不存在' });
-    }
-    wsService.notifyReviewComment(parseInt(req.params.id), comment, 'new_comment');
-    const review = getReviewById(parseInt(req.params.id));
-    if (review) {
-      wsService.notifyReviewUpdate(review.id, 'review_updated');
-    }
-    res.status(201).json(comment);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
-});
+);
 
-app.put('/api/comments/:id/resolve', (req, res) => {
-  try {
-    const comment = resolveComment(parseInt(req.params.id));
-    if (!comment) {
-      return res.status(404).json({ error: '评论不存在' });
+app.put(
+  '/api/comments/:id/resolve',
+  logAudit(OPERATION_TYPES.COMMENT_RESOLVE, {
+    getParams: (req) => ({ comment_id: req.params.id, action: 'resolve' })
+  }),
+  (req, res) => {
+    try {
+      const comment = resolveComment(parseInt(req.params.id));
+      if (!comment) {
+        return res.status(404).json({ error: '评论不存在' });
+      }
+      wsService.notifyCommentResolved(comment.review_id, comment, 'comment_resolved');
+      const review = getReviewById(comment.review_id);
+      if (review) {
+        wsService.notifyReviewUpdate(review.id, 'review_updated');
+      }
+      res.json(comment);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
     }
-    wsService.notifyCommentResolved(comment.review_id, comment, 'comment_resolved');
-    const review = getReviewById(comment.review_id);
-    if (review) {
-      wsService.notifyReviewUpdate(review.id, 'review_updated');
-    }
-    res.json(comment);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
-});
+);
 
 app.put('/api/comments/:id/unresolve', (req, res) => {
   try {
@@ -327,27 +634,107 @@ app.delete('/api/comments/:id', (req, res) => {
   }
 });
 
-app.post('/api/documents/:id/versions/:versionId/tags', (req, res) => {
+// ============ 补丁 API ============
+
+app.get(
+  '/api/documents/:id/patches',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const { status, version } = req.query;
+      const patches = listPatchesByDocument(parseInt(req.params.id), {
+        status: status || null,
+        versionNumber: version !== undefined ? parseInt(version) : null
+      });
+      res.json(patches);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/patches/stats',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const { version } = req.query;
+      if (!version) {
+        return res.status(400).json({ error: '缺少版本参数' });
+      }
+      const stats = getPatchStats(parseInt(req.params.id), parseInt(version));
+      res.json(stats);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get('/api/patches/:id', (req, res) => {
   try {
-    const { name } = req.body;
-    if (!name) {
-      return res.status(400).json({ error: '缺少标签名称' });
+    const patch = getPatchById(parseInt(req.params.id));
+    if (!patch) {
+      return res.status(404).json({ error: '补丁不存在' });
     }
-    const tag = addTag(parseInt(req.params.id), parseInt(req.params.versionId), name);
-    if (!tag) {
-      return res.status(404).json({ error: '文档或版本不存在' });
-    }
-    res.status(201).json(tag);
+    res.json(patch);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.delete('/api/tags/:tagId', (req, res) => {
+app.post(
+  '/api/documents/:id/patches',
+  logAudit(OPERATION_TYPES.PATCH_CREATE, {
+    getParams: (req) => ({ lines: `${req.body?.start_line}-${req.body?.end_line}` })
+  }),
+  requireDocPermission(ROLES.EDITOR),
+  (req, res) => {
+    try {
+      const { start_line, end_line, replacement_text, created_by, description, version_number, review_id } = req.body;
+      if (start_line === undefined || end_line === undefined || replacement_text === undefined || !version_number) {
+        return res.status(400).json({ error: '缺少必要参数' });
+      }
+      const result = createPatch({
+        document_id: parseInt(req.params.id),
+        version_number: parseInt(version_number),
+        start_line: parseInt(start_line),
+        end_line: parseInt(end_line),
+        replacement_text,
+        created_by: created_by || req.currentUser.name,
+        description: description || '',
+        review_id: review_id ? parseInt(review_id) : null
+      });
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+      res.status(201).json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put('/api/patches/:id/status', (req, res) => {
   try {
-    const success = removeTag(parseInt(req.params.tagId));
+    const { status } = req.body;
+    if (!['pending', 'accepted', 'rejected', 'merged'].includes(status)) {
+      return res.status(400).json({ error: '无效的状态值' });
+    }
+    const patch = updatePatchStatus(parseInt(req.params.id), status);
+    if (!patch) {
+      return res.status(404).json({ error: '补丁不存在' });
+    }
+    res.json(patch);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/patches/:id', (req, res) => {
+  try {
+    const success = deletePatch(parseInt(req.params.id));
     if (!success) {
-      return res.status(404).json({ error: '标签不存在' });
+      return res.status(404).json({ error: '补丁不存在' });
     }
     res.json({ success: true });
   } catch (e) {
@@ -355,18 +742,72 @@ app.delete('/api/tags/:tagId', (req, res) => {
   }
 });
 
-app.post('/api/documents/:id/revert/:version', (req, res) => {
+app.get(
+  '/api/documents/:id/conflicts',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const { version } = req.query;
+      if (!version) {
+        return res.status(400).json({ error: '缺少版本参数' });
+      }
+      const conflicts = detectConflicts(parseInt(req.params.id), parseInt(version));
+      res.json(conflicts);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put('/api/patches/:id/resolve', (req, res) => {
   try {
-    const { commit_message } = req.body;
-    const result = revertToVersion(parseInt(req.params.id), parseInt(req.params.version), commit_message);
-    if (!result) {
-      return res.status(404).json({ error: '文档或版本不存在' });
+    const { resolution, resolved_content } = req.body;
+    const result = resolveConflict(parseInt(req.params.id), resolution, resolved_content);
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
     }
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
+
+app.post(
+  '/api/documents/:id/merge',
+  logAudit(OPERATION_TYPES.PATCH_MERGE, {
+    getParams: (req) => ({ version: req.body?.version })
+  }),
+  requireDocPermission(ROLES.EDITOR),
+  (req, res) => {
+    try {
+      const { version, commit_message, merged_by } = req.body;
+      if (!version) {
+        return res.status(400).json({ error: '缺少版本参数' });
+      }
+      const result = mergePatches(parseInt(req.params.id), parseInt(version), {
+        commit_message: commit_message || '',
+        merged_by: merged_by || req.currentUser.name
+      });
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error, conflicts: result.conflicts });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get('/api/reviews/:id/patches', (req, res) => {
+  try {
+    const patches = listPatchesByReview(parseInt(req.params.id));
+    res.json(patches);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ 合同 API ============
 
 app.get('/api/contracts', (req, res) => {
   try {
@@ -514,150 +955,7 @@ app.get('/api/notifications/pending', (req, res) => {
   }
 });
 
-app.get('/api/documents/:id/patches', (req, res) => {
-  try {
-    const { status, version } = req.query;
-    const patches = listPatchesByDocument(parseInt(req.params.id), {
-      status: status || null,
-      versionNumber: version !== undefined ? parseInt(version) : null
-    });
-    res.json(patches);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/documents/:id/patches/stats', (req, res) => {
-  try {
-    const { version } = req.query;
-    if (!version) {
-      return res.status(400).json({ error: '缺少版本参数' });
-    }
-    const stats = getPatchStats(parseInt(req.params.id), parseInt(version));
-    res.json(stats);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/patches/:id', (req, res) => {
-  try {
-    const patch = getPatchById(parseInt(req.params.id));
-    if (!patch) {
-      return res.status(404).json({ error: '补丁不存在' });
-    }
-    res.json(patch);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/documents/:id/patches', (req, res) => {
-  try {
-    const { start_line, end_line, replacement_text, created_by, description, version_number, review_id } = req.body;
-    if (start_line === undefined || end_line === undefined || replacement_text === undefined || !version_number) {
-      return res.status(400).json({ error: '缺少必要参数' });
-    }
-    const result = createPatch({
-      document_id: parseInt(req.params.id),
-      version_number: parseInt(version_number),
-      start_line: parseInt(start_line),
-      end_line: parseInt(end_line),
-      replacement_text,
-      created_by: created_by || '匿名用户',
-      description: description || '',
-      review_id: review_id ? parseInt(review_id) : null
-    });
-    if (result.error) {
-      return res.status(result.status || 400).json({ error: result.error });
-    }
-    res.status(201).json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.put('/api/patches/:id/status', (req, res) => {
-  try {
-    const { status } = req.body;
-    if (!['pending', 'accepted', 'rejected', 'merged'].includes(status)) {
-      return res.status(400).json({ error: '无效的状态值' });
-    }
-    const patch = updatePatchStatus(parseInt(req.params.id), status);
-    if (!patch) {
-      return res.status(404).json({ error: '补丁不存在' });
-    }
-    res.json(patch);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.delete('/api/patches/:id', (req, res) => {
-  try {
-    const success = deletePatch(parseInt(req.params.id));
-    if (!success) {
-      return res.status(404).json({ error: '补丁不存在' });
-    }
-    res.json({ success: true });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/documents/:id/conflicts', (req, res) => {
-  try {
-    const { version } = req.query;
-    if (!version) {
-      return res.status(400).json({ error: '缺少版本参数' });
-    }
-    const conflicts = detectConflicts(parseInt(req.params.id), parseInt(version));
-    res.json(conflicts);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.put('/api/patches/:id/resolve', (req, res) => {
-  try {
-    const { resolution, resolved_content } = req.body;
-    const result = resolveConflict(parseInt(req.params.id), resolution, resolved_content);
-    if (result.error) {
-      return res.status(result.status || 400).json({ error: result.error });
-    }
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post('/api/documents/:id/merge', (req, res) => {
-  try {
-    const { version, commit_message, merged_by } = req.body;
-    if (!version) {
-      return res.status(400).json({ error: '缺少版本参数' });
-    }
-    const result = mergePatches(parseInt(req.params.id), parseInt(version), {
-      commit_message: commit_message || '',
-      merged_by: merged_by || '系统'
-    });
-    if (result.error) {
-      return res.status(result.status || 400).json({ error: result.error, conflicts: result.conflicts });
-    }
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/reviews/:id/patches', (req, res) => {
-  try {
-    const patches = listPatchesByReview(parseInt(req.params.id));
-    res.json(patches);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
+// ============ 模板 API ============
 
 app.get('/api/templates', (req, res) => {
   try {
@@ -735,21 +1033,27 @@ app.get('/api/templates/:id/versions/:version', (req, res) => {
   }
 });
 
-app.post('/api/templates/:id/render', (req, res) => {
-  try {
-    const { variables, keep_missing, version_number } = req.body;
-    const result = renderTemplateById(parseInt(req.params.id), variables || {}, {
-      keepMissing: keep_missing !== false,
-      versionNumber: version_number ? parseInt(version_number) : null
-    });
-    if (result.error) {
-      return res.status(result.status || 400).json({ error: result.error });
+app.post(
+  '/api/templates/:id/render',
+  logAudit(OPERATION_TYPES.TEMPLATE_RENDER, {
+    getParams: (req) => ({ template_id: req.params.id, has_version: !!req.body?.version_number })
+  }),
+  (req, res) => {
+    try {
+      const { variables, keep_missing, version_number } = req.body;
+      const result = renderTemplateById(parseInt(req.params.id), variables || {}, {
+        keepMissing: keep_missing !== false,
+        versionNumber: version_number ? parseInt(version_number) : null
+      });
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
     }
-    res.json(result);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
   }
-});
+);
 
 app.post('/api/templates/render', (req, res) => {
   try {
@@ -798,6 +1102,202 @@ app.post('/api/templates/:id/batch-generate', (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ============ 权限管理 API ============
+
+app.get(
+  '/api/documents/:id/permissions',
+  logAudit(OPERATION_TYPES.PERMISSION_CHANGE, {
+    getParams: () => ({ action: 'list_permissions' })
+  }),
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const permissions = getPermissionDetailsForDocument(docId);
+      const isOwner = hasAtLeastRole(req._userRole, ROLES.OWNER);
+      res.json({
+        permissions,
+        current_user_role: req._userRole,
+        can_manage: isOwner,
+        is_public: req._document.is_public
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents/:id/permissions',
+  logAudit(OPERATION_TYPES.PERMISSION_ADD, {
+    getParams: (req) => ({ user_id: req.body?.user_id, role: req.body?.role })
+  }),
+  requireDocPermission(ROLES.OWNER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const { user_id, role } = req.body;
+      if (!user_id || !role) {
+        return res.status(400).json({ error: '缺少用户ID或角色' });
+      }
+      const result = addCollaborator(docId, user_id, role, req.currentUser.id);
+      if (result.error) {
+        return res.status(400).json({ error: result.error });
+      }
+      res.status(201).json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put(
+  '/api/documents/:id/permissions/:userId',
+  logAudit(OPERATION_TYPES.PERMISSION_CHANGE, {
+    getParams: (req) => ({ user_id: req.params.userId, new_role: req.body?.role })
+  }),
+  requireDocPermission(ROLES.OWNER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const userId = req.params.userId;
+      const { role } = req.body;
+      if (!role) {
+        return res.status(400).json({ error: '缺少角色参数' });
+      }
+      const result = updateCollaboratorRole(docId, userId, role, req.currentUser.id);
+      if (result.error) {
+        return res.status(400).json({ error: result.error });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.delete(
+  '/api/documents/:id/permissions/:userId',
+  logAudit(OPERATION_TYPES.PERMISSION_REMOVE, {
+    getParams: (req) => ({ user_id: req.params.userId })
+  }),
+  requireDocPermission(ROLES.OWNER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const userId = req.params.userId;
+      const result = removeCollaborator(docId, userId, req.currentUser.id);
+      if (result.error) {
+        return res.status(400).json({ error: result.error });
+      }
+      res.json({ success: true, removed: result });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put(
+  '/api/documents/:id/public',
+  logAudit(OPERATION_TYPES.DOCUMENT_PUBLIC_CHANGE, {
+    getParams: (req) => ({ is_public: req.body?.is_public })
+  }),
+  requireDocPermission(ROLES.OWNER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const { is_public } = req.body;
+      const result = setDocumentPublic(docId, is_public === true);
+      if (!result) {
+        return res.status(404).json({ error: '文档不存在' });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ============ 审计日志 API ============
+
+app.get('/api/audit-logs/document/:documentId', (req, res) => {
+  try {
+    const docId = parseInt(req.params.documentId);
+    const userId = req.currentUser.id;
+    const doc = getDocumentById(docId, { reload: false });
+
+    if (!doc) {
+      return res.status(404).json({ error: '文档不存在' });
+    }
+
+    const permissionResult = checkPermission(docId, userId, ROLES.VIEWER, doc.is_public);
+    if (!permissionResult.allowed) {
+      return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+    }
+
+    const { page, page_size, start_time, end_time } = req.query;
+    const options = {
+      page: page ? parseInt(page) : 1,
+      pageSize: page_size ? parseInt(page_size) : 20
+    };
+    if (start_time) options.startTime = parseInt(start_time);
+    if (end_time) options.endTime = parseInt(end_time);
+
+    const result = getLogsByDocument(docId, options);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/audit-logs/user/:userId', (req, res) => {
+  try {
+    const currentUserId = req.currentUser.id;
+    const targetUserId = req.params.userId;
+
+    if (!currentUserId || currentUserId !== targetUserId) {
+      const isAdmin = currentUserId && hasAtLeastRole(
+        getUserRoleForDocument(1, currentUserId),
+        ROLES.OWNER
+      );
+      if (!isAdmin) {
+        return res.status(403).json({ error: '只能查看自己的操作日志' });
+      }
+    }
+
+    const { page, page_size, start_time, end_time } = req.query;
+    const options = {
+      page: page ? parseInt(page) : 1,
+      pageSize: page_size ? parseInt(page_size) : 20
+    };
+    if (start_time) options.startTime = parseInt(start_time);
+    if (end_time) options.endTime = parseInt(end_time);
+
+    const result = getLogsByUser(targetUserId, options);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/audit-logs/verify', (req, res) => {
+  try {
+    const result = verifyLogIntegrity();
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/current-user', (req, res) => {
+  res.json({
+    user_id: req.currentUser.id,
+    user_name: req.currentUser.name
+  });
+});
+
+// ============ 页面路由 ============
 
 app.get('/templates', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'templates.html'));
@@ -865,6 +1365,8 @@ server.listen(PORT, () => {
   console.log(`合同签署平台已启动: http://localhost:${PORT}`);
   console.log(`WebSocket 路径: ws://localhost:${PORT}/ws`);
   console.log(`催办定时器已启动 (每分钟检查一次)`);
+  console.log(`权限系统: 通过 X-User-Id header 传递用户标识`);
+  console.log(`审计日志: 所有文档操作已记录，使用 SHA-256 哈希链防篡改`);
 });
 
 module.exports = { wsService };
