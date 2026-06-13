@@ -4,8 +4,8 @@ const crypto = require('crypto');
 const { getUserName } = require('./permissionService');
 
 const dataDir = path.join(__dirname, '..', 'data');
-const auditLogFile = path.join(dataDir, 'audit-logs.jsonl');
-const auditMetaFile = path.join(dataDir, 'audit-meta.json');
+const auditLogFile = path.join(dataDir, 'audit-logs.log');
+const auditIndexFile = path.join(dataDir, 'audit-index.json');
 
 let logs = [];
 let nextLogId = 1;
@@ -47,7 +47,7 @@ function ensureDataDir() {
   }
 }
 
-function computeLogHash(logEntry, prevHash) {
+function computeLogHash(logEntry) {
   const content = JSON.stringify({
     id: logEntry.id,
     timestamp: logEntry.timestamp,
@@ -56,121 +56,9 @@ function computeLogHash(logEntry, prevHash) {
     document_id: logEntry.document_id,
     result: logEntry.result,
     params_summary: logEntry.params_summary,
-    prev_hash: prevHash
+    prev_hash: logEntry.prev_hash
   });
   return crypto.createHash('sha256').update(content).digest('hex');
-}
-
-function loadMeta() {
-  ensureDataDir();
-  if (fs.existsSync(auditMetaFile)) {
-    try {
-      const raw = fs.readFileSync(auditMetaFile, 'utf8');
-      const meta = JSON.parse(raw);
-      nextLogId = meta.nextLogId || 1;
-      lastHash = meta.lastHash || null;
-      return true;
-    } catch (e) {
-      console.warn('[审计] 元数据文件损坏，将从日志文件重建:', e.message);
-    }
-  }
-  return false;
-}
-
-function saveMeta() {
-  ensureDataDir();
-  const tempFile = auditMetaFile + '.tmp';
-  const meta = {
-    nextLogId,
-    lastHash,
-    updatedAt: Date.now()
-  };
-  fs.writeFileSync(tempFile, JSON.stringify(meta, null, 2), 'utf8');
-  fs.renameSync(tempFile, auditMetaFile);
-}
-
-function loadData() {
-  if (isLoaded) return;
-  ensureDataDir();
-
-  logs = [];
-  nextLogId = 1;
-  lastHash = null;
-
-  const metaOk = loadMeta();
-
-  if (fs.existsSync(auditLogFile)) {
-    try {
-      const raw = fs.readFileSync(auditLogFile, 'utf8');
-      const lines = raw.split('\n');
-      let lineNum = 0;
-      let validCount = 0;
-      let badLines = 0;
-
-      for (const line of lines) {
-        lineNum++;
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-
-        try {
-          const logEntry = JSON.parse(trimmed);
-          logs.push(logEntry);
-          validCount++;
-
-          if (logEntry.id >= nextLogId) {
-            nextLogId = logEntry.id + 1;
-          }
-          if (logEntry.hash) {
-            lastHash = logEntry.hash;
-          }
-        } catch (e) {
-          badLines++;
-          console.warn(`[审计] 跳过第 ${lineNum} 行坏数据: ${e.message}`);
-        }
-      }
-
-      console.log(`[审计] 加载完成: ${validCount} 条有效记录, ${badLines} 条损坏已跳过`);
-
-      if (!metaOk) {
-        saveMeta();
-        console.log('[审计] 元数据已从日志文件重建');
-      }
-    } catch (e) {
-      console.error('[审计] 读取日志文件失败:', e.message);
-    }
-  } else {
-    console.log('[审计] 日志文件不存在，将创建新文件');
-    saveMeta();
-  }
-
-  isLoaded = true;
-}
-
-function appendLogLine(logEntry) {
-  ensureDataDir();
-
-  const line = JSON.stringify(logEntry) + '\n';
-
-  try {
-    fs.appendFileSync(auditLogFile, line, 'utf8');
-
-    try {
-      const fd = fs.openSync(auditLogFile, 'a');
-      fs.fsyncSync(fd);
-      fs.closeSync(fd);
-    } catch (fsyncErr) {
-      console.warn('[审计] fsync 刷盘失败，数据可能在缓存中:', fsyncErr.message);
-    }
-
-    return true;
-  } catch (e) {
-    console.error('[审计] 追加日志失败:', e.message);
-    return false;
-  }
-}
-
-function getLastHash() {
-  return lastHash;
 }
 
 function summarizeParams(obj) {
@@ -182,6 +70,147 @@ function summarizeParams(obj) {
   } catch (e) {
     return String(obj).slice(0, 200);
   }
+}
+
+function saveIndex() {
+  ensureDataDir();
+  const indexData = {
+    nextLogId,
+    lastHash,
+    lastLogId: logs.length > 0 ? logs[logs.length - 1].id : 0,
+    updatedAt: Date.now()
+  };
+  const tempFile = auditIndexFile + '.tmp';
+  fs.writeFileSync(tempFile, JSON.stringify(indexData, null, 2), 'utf8');
+  fs.renameSync(tempFile, auditIndexFile);
+}
+
+function loadIndex() {
+  if (fs.existsSync(auditIndexFile)) {
+    try {
+      const raw = fs.readFileSync(auditIndexFile, 'utf8');
+      return JSON.parse(raw);
+    } catch (e) {
+      console.warn('审计索引文件损坏，将重建:', e.message);
+    }
+  }
+  return null;
+}
+
+function loadData() {
+  if (isLoaded) return;
+  ensureDataDir();
+
+  logs = [];
+  nextLogId = 1;
+  lastHash = null;
+
+  const index = loadIndex();
+
+  if (!fs.existsSync(auditLogFile)) {
+    isLoaded = true;
+    saveIndex();
+    return;
+  }
+
+  let validCount = 0;
+  let corruptedCount = 0;
+  let lastValidHash = null;
+  let lastValidId = 0;
+
+  const rawContent = fs.readFileSync(auditLogFile, 'utf8');
+  const lines = rawContent.split('\n');
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    try {
+      const logEntry = JSON.parse(line);
+
+      const expectedPrevHash = logs.length === 0 ? null : logs[logs.length - 1].hash;
+      if (logEntry.prev_hash !== expectedPrevHash) {
+        console.warn(`审计日志第${i + 1}行（ID=${logEntry.id}）prev_hash 不匹配，跳过该记录及之后所有记录`);
+        corruptedCount += (lines.length - i);
+        break;
+      }
+
+      const expectedHash = computeLogHash(logEntry);
+      if (logEntry.hash !== expectedHash) {
+        console.warn(`审计日志第${i + 1}行（ID=${logEntry.id}）hash 校验失败，跳过该记录及之后所有记录`);
+        corruptedCount += (lines.length - i);
+        break;
+      }
+
+      logs.push(logEntry);
+      lastValidHash = logEntry.hash;
+      lastValidId = logEntry.id;
+      validCount++;
+    } catch (e) {
+      console.warn(`审计日志第${i + 1}行解析失败，跳过该记录及之后所有记录:`, e.message);
+      corruptedCount += (lines.length - i);
+      break;
+    }
+  }
+
+  if (logs.length > 0) {
+    nextLogId = lastValidId + 1;
+    lastHash = lastValidHash;
+  } else {
+    nextLogId = 1;
+    lastHash = null;
+  }
+
+  if (corruptedCount > 0) {
+    console.warn(`审计日志加载完成：有效 ${validCount} 条，丢弃损坏 ${corruptedCount} 条（从损坏处截断）`);
+    truncateCorruptedLogs(validCount);
+  } else {
+    console.log(`审计日志加载完成：共 ${validCount} 条记录`);
+  }
+
+  if (index && logs.length > 0) {
+    if (index.lastLogId !== logs[logs.length - 1].id) {
+      console.warn('索引与实际日志不一致，重建索引');
+      saveIndex();
+    }
+  }
+
+  isLoaded = true;
+}
+
+function truncateCorruptedLogs(validCount) {
+  if (validCount === 0) {
+    fs.writeFileSync(auditLogFile, '', 'utf8');
+    return;
+  }
+
+  const rawContent = fs.readFileSync(auditLogFile, 'utf8');
+  const lines = rawContent.split('\n');
+  let validLines = [];
+  let count = 0;
+
+  for (const line of lines) {
+    if (line.trim()) {
+      if (count < validCount) {
+        validLines.push(line);
+        count++;
+      } else {
+        break;
+      }
+    }
+  }
+
+  const tempFile = auditLogFile + '.tmp';
+  fs.writeFileSync(tempFile, validLines.join('\n') + (validLines.length > 0 ? '\n' : ''), 'utf8');
+  fs.renameSync(tempFile, auditLogFile);
+  saveIndex();
+  console.log('已截断损坏的审计日志，保留有效部分');
+}
+
+function appendLogLine(logEntry) {
+  ensureDataDir();
+  const line = JSON.stringify(logEntry) + '\n';
+  fs.appendFileSync(auditLogFile, line, 'utf8');
 }
 
 function createLog({ userId, operation, documentId = null, result = RESULT_TYPES.SUCCESS, params = null, errorMessage = null }) {
@@ -196,23 +225,27 @@ function createLog({ userId, operation, documentId = null, result = RESULT_TYPES
     document_id: documentId,
     result,
     params_summary: summarizeParams(params),
-    error_message: errorMessage || null
+    error_message: errorMessage || null,
+    prev_hash: lastHash
   };
 
-  const prevHash = getLastHash();
-  logEntry.prev_hash = prevHash;
-  logEntry.hash = computeLogHash(logEntry, prevHash);
+  logEntry.hash = computeLogHash(logEntry);
 
-  const appendOk = appendLogLine(logEntry);
+  try {
+    appendLogLine(logEntry);
+  } catch (e) {
+    console.error('写入审计日志失败:', e.message);
+    throw new Error(`审计日志写入失败: ${e.message}`);
+  }
 
-  if (appendOk) {
-    logs.push(logEntry);
-    nextLogId++;
-    lastHash = logEntry.hash;
-    saveMeta();
-  } else {
-    console.error('[审计] 日志写入失败，未更新内存和元数据');
-    return null;
+  logs.push(logEntry);
+  lastHash = logEntry.hash;
+  nextLogId++;
+
+  try {
+    saveIndex();
+  } catch (e) {
+    console.warn('保存审计索引失败（不影响日志完整性）:', e.message);
   }
 
   return logEntry;
@@ -330,11 +363,11 @@ function verifyLogIntegrity() {
   loadData();
   const issues = [];
 
-  let expectedPrevHash = null;
   for (let i = 0; i < logs.length; i++) {
     const log = logs[i];
+    const prevHash = i === 0 ? null : logs[i - 1].hash;
 
-    if (log.prev_hash !== expectedPrevHash) {
+    if (log.prev_hash !== prevHash) {
       issues.push({
         logId: log.id,
         type: 'prev_hash_mismatch',
@@ -342,80 +375,41 @@ function verifyLogIntegrity() {
       });
     }
 
-    const computedHash = computeLogHash(log, expectedPrevHash);
-    if (log.hash !== computedHash) {
+    const expectedHash = computeLogHash(log);
+    if (log.hash !== expectedHash) {
       issues.push({
         logId: log.id,
         type: 'hash_mismatch',
         message: `日志 #${log.id} 的 hash 校验失败，数据可能被篡改`
       });
     }
-
-    expectedPrevHash = log.hash;
   }
 
   return {
     valid: issues.length === 0,
     totalLogs: logs.length,
-    issues,
-    storage: {
-      format: 'NDJSON (append-only)',
-      file: auditLogFile,
-      description: '新记录只追加到文件末尾，旧记录永不修改'
-    }
+    issues
   };
 }
 
-function migrateLegacyFormat() {
-  const legacyFile = path.join(dataDir, 'audit-logs.json');
-  if (!fs.existsSync(legacyFile)) {
-    return { migrated: false, reason: 'legacy file not found' };
-  }
-
-  if (fs.existsSync(auditLogFile)) {
-    const stats = fs.statSync(auditLogFile);
-    if (stats.size > 0) {
-      return { migrated: false, reason: 'new format file already has data' };
-    }
-  }
-
-  try {
-    console.log('[审计] 检测到旧格式日志文件，开始迁移...');
-    const raw = fs.readFileSync(legacyFile, 'utf8');
-    const legacy = JSON.parse(raw);
-    const legacyLogs = legacy.logs || [];
-
-    if (legacyLogs.length === 0) {
-      fs.unlinkSync(legacyFile);
-      return { migrated: true, count: 0, message: 'legacy file was empty, removed' };
-    }
-
-    let migratedCount = 0;
-    for (const log of legacyLogs) {
-      const ok = appendLogLine(log);
-      if (ok) {
-        logs.push(log);
-        if (log.id >= nextLogId) nextLogId = log.id + 1;
-        if (log.hash) lastHash = log.hash;
-        migratedCount++;
-      }
-    }
-
-    saveMeta();
-
-    const backupFile = legacyFile + '.bak';
-    fs.renameSync(legacyFile, backupFile);
-    console.log(`[审计] 迁移完成: ${migratedCount} 条记录，旧文件已备份为 ${backupFile}`);
-
-    return { migrated: true, count: migratedCount, backup: backupFile };
-  } catch (e) {
-    console.error('[审计] 迁移失败:', e.message);
-    return { migrated: false, error: e.message };
-  }
-}
-
-if (fs.existsSync(path.join(dataDir, 'audit-logs.json')) && !fs.existsSync(auditLogFile)) {
-  migrateLegacyFormat();
+function simulateWriteFailure() {
+  loadData();
+  const testEntry = {
+    id: nextLogId,
+    timestamp: Date.now(),
+    user_id: 'test',
+    user_name: '测试',
+    operation: 'test.failure',
+    document_id: null,
+    result: 'success',
+    params_summary: '{}',
+    error_message: null,
+    prev_hash: lastHash,
+    hash: 'INVALID_HASH_THIS_WILL_CAUSE_VERIFY_FAIL'
+  };
+  const line = JSON.stringify(testEntry) + '\n';
+  fs.appendFileSync(auditLogFile, line, 'utf8');
+  console.log('已写入一条损坏的测试日志，下次加载时会被检测并截断');
 }
 
 loadData();
@@ -428,5 +422,5 @@ module.exports = {
   getLogsByUser,
   getAllLogs,
   verifyLogIntegrity,
-  migrateLegacyFormat
+  simulateWriteFailure
 };
