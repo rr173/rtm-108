@@ -1,10 +1,19 @@
 const { createContract, startSigning, signContract, listContracts } = require('./contractService');
-const { createDocument, updateDocument, addTag, listDocuments } = require('./documentService');
+const { createDocument, updateDocument, addTag, listDocuments, getDocumentById } = require('./documentService');
 const { createReview, addComment, resolveComment, listReviewsByDocument } = require('./reviewService');
 const { createPatch, listPatchesByDocument } = require('./patchService');
 const { createTemplate, listTemplates } = require('./templateService');
 const { setOwner, addCollaborator } = require('./permissionService');
 const { createLog, OPERATION_TYPES, RESULT_TYPES } = require('./auditService');
+const {
+  createMirror,
+  listMirrorsByDocument,
+  getMirrorById,
+  submitParagraphTranslation,
+  submitMirrorVersion,
+  getParagraphMappings,
+  detectChangesOnMasterUpdate
+} = require('./mirrorService');
 
 function seedDemoData() {
   const existingContracts = listContracts();
@@ -313,6 +322,8 @@ function seedDocumentData() {
   console.log('审计日志初始化完成，共写入 10 条历史操作记录');
 
   seedReviewData(doc.id);
+
+  setTimeout(() => seedMirrorData(doc.id), 300);
 }
 
 function seedReviewData(docId) {
@@ -546,6 +557,305 @@ function generateFakeSignature() {
 </svg>
 `).toString('base64')}`;
   return canvasData;
+}
+
+function seedMirrorData(docId) {
+  const existingMirrors = listMirrorsByDocument(docId);
+  if (existingMirrors && existingMirrors.length > 0) {
+    console.log('已存在镜像数据，跳过初始化');
+    return;
+  }
+
+  console.log('\n========== 初始化多语言镜像演示数据 ==========');
+
+  const EN_TRANSLATIONS = {
+    'プロジェクト開発計画': 'Project Development Plan',
+    '一、プロジェクト概要': '1. Project Overview',
+    '本プロジェクトは、複数人によるリアルタイム編集と文書管理をサポートするオンラインコラボレーションプラットフォームの開発を目的としています。': 'This project aims to develop an online collaboration platform that supports real-time multi-user editing and document management.',
+    'プラットフォームはマイクロサービスアーキテクチャを採用し、高可用性と拡張性を備えています。': 'The platform adopts a microservices architecture with high availability and scalability.',
+    '対象ユーザー：企業チーム、教育機関、個人クリエイター。': 'Target users: Enterprise teams, educational institutions, and individual creators.',
+    '二、主な機能': '2. Main Features',
+    '1. ユーザー登録とログイン': '1. User registration and login',
+    '2. 文書の作成と編集': '2. Document creation and editing',
+    '3. リアルタイムコラボレーション機能': '3. Real-time collaboration features',
+    '4. バージョン履歴管理': '4. Version history management',
+    '5. コメントと注釈機能': '5. Comments and annotation features',
+    '6. 文書エクスポート（PDF、Word）': '6. Document export (PDF, Word)',
+    '7. チーム権限管理': '7. Team permission management',
+    '三、開発期間': '3. Development Timeline',
+    '第一版完成までに4か月を予定。': 'Estimated 4 months to complete the first version.',
+    '詳細マイルストーン：': 'Detailed milestones:',
+    '- 1か月目：要件分析とアーキテクチャ設計': '- Month 1: Requirements analysis and architecture design',
+    '- 2か月目：コア機能開発': '- Month 2: Core feature development',
+    '- 3か月目：拡張機能と最適化': '- Month 3: Extended features and optimization',
+    '- 4か月目：テストと本番リリース': '- Month 4: Testing and launch',
+    '四、チーム体制': '4. Team Composition',
+    '- フロントエンド開発：3名': '- Frontend development: 3 people',
+    '- バックエンド開発：2名': '- Backend development: 2 people',
+    '- テスト：1名': '- Testing: 1 person',
+    '- プロダクトマネージャー：1名': '- Product manager: 1 person',
+    '- UIデザイナー：1名': '- UI designer: 1 person',
+    '五、技術スタック': '5. Technology Stack',
+    'フロントエンド：React + TypeScript + Redux': 'Frontend: React + TypeScript + Redux',
+    'バックエンド：Node.js + Express + MongoDB': 'Backend: Node.js + Express + MongoDB',
+    'データベース：MongoDB + Redisキャッシュ': 'Database: MongoDB + Redis Cache',
+    'リアルタイム通信：WebSocket': 'Real-time communication: WebSocket',
+    'デプロイ：Docker + Kubernetes': 'Deployment: Docker + Kubernetes',
+    '六、リスク評価': '6. Risk Assessment',
+    '1. 技術リスク：リアルタイムコラボレーションアルゴリズムの複雑さが高い': '1. Technical risk: High complexity of real-time collaboration algorithm',
+    '2. スケジュールリスク：機能拡張による延期の可能性': '2. Schedule risk: Feature expansion may cause delays',
+    '3. 品質リスク：多人数コラボレーションシナリオのテスト難度': '3. Quality risk: Difficulty in testing multi-user collaboration scenarios',
+    '対策：': 'Mitigation measures:',
+    '- 事前にキーテクノロジーの予備調査を実施': '- Pre-research key technologies in advance',
+    '- アジャイル開発を採用し、段階的にデリバリー': '- Adopt agile development and phased delivery',
+    '- 自動テストカバレッジの拡充': '- Increase automated test coverage'
+  };
+
+  const JA_PARTIAL_TRANSLATIONS = {
+    'プロジェクト開発計画': 'プロジェクト開発計画',
+    '一、プロジェクト概要': '一、プロジェクト概要',
+    '本プロジェクトは、複数人によるリアルタイム編集と文書管理をサポートするオンラインコラボレーションプラットフォームの開発を目的としています。': '本プロジェクトは、複数人によるリアルタイム編集と文書管理をサポートするオンラインコラボレーションプラットフォームの開発を目的としています。',
+    'プラットフォームはマイクロサービスアーキテクチャを採用し、高可用性と拡張性を備えています。': 'プラットフォームはマイクロサービスアーキテクチャを採用し、高可用性と拡張性を備えています。',
+    '対象ユーザー：企業チーム、教育機関、個人クリエイター。': '',
+    '二、主な機能': '二、主な機能',
+    '1. ユーザー登録とログイン': '1. ユーザー登録とログイン',
+    '2. 文書の作成と編集': '2. 文書の作成と編集',
+    '3. リアルタイムコラボレーション機能': '3. リアルタイムコラボレーション機能',
+    '4. バージョン履歴管理': '4. バージョン履歴管理',
+    '5. コメントと注釈機能': '',
+    '6. 文書エクスポート（PDF、Word）': '',
+    '7. チーム権限管理': '',
+    '三、開発期間': '三、開発期間',
+    '第一版完成までに4か月を予定。': '',
+    '詳細マイルストーン：': '',
+    '- 1か月目：要件分析とアーキテクチャ設計': '',
+    '- 2か月目：コア機能開発': '',
+    '- 3か月目：拡張機能と最適化': '',
+    '- 4か月目：テストと本番リリース': '',
+    '四、チーム体制': '四、チーム体制',
+    '- フロントエンド開発：3名': '',
+    '- バックエンド開発：2名': '',
+    '- テスト：1名': '',
+    '- プロダクトマネージャー：1名': '',
+    '- UIデザイナー：1名': '',
+    '五、技術スタック': '五、技術スタック',
+    'フロントエンド：React + TypeScript + Redux': '',
+    'バックエンド：Node.js + Express + MongoDB': '',
+    'データベース：MongoDB + Redisキャッシュ': '',
+    'リアルタイム通信：WebSocket': '',
+    'デプロイ：Docker + Kubernetes': '',
+    '六、リスク評価': '六、リスク評価',
+    '1. 技術リスク：リアルタイムコラボレーションアルゴリズムの複雑さが高い': '',
+    '2. スケジュールリスク：機能拡張による延期の可能性': '',
+    '3. 品質リスク：多人数コラボレーションシナリオのテスト難度': '',
+    '対策：': '',
+    '- 事前にキーテクノロジーの予備調査を実施': '',
+    '- アジャイル開発を採用し、段階的にデリバリー': '',
+    '- 自動テストカバレッジの拡充': ''
+  };
+
+  function buildTranslationLines(masterContent, translationMap, defaultEmpty = false) {
+    const lines = masterContent.split('\n');
+    return lines.map(line => {
+      if (line.trim() === '') return '';
+      if (translationMap[line] !== undefined) {
+        return translationMap[line];
+      }
+      return defaultEmpty ? '' : line;
+    });
+  }
+
+  function translateAllPending(mirrorId, masterVersion, translationMap, translatorName, defaultTranslate = false) {
+    const mappings = getParagraphMappings(mirrorId);
+    let translatedCount = 0;
+    mappings.forEach(mapping => {
+      if (mapping.status === 'new' || mapping.status === 'outdated') {
+        const translated = translationMap[mapping.master_content];
+        const finalContent = (translated !== undefined && translated !== '')
+          ? translated
+          : (defaultTranslate ? `[${translatorName}] ${mapping.master_content}` : '');
+
+        if (finalContent) {
+          submitParagraphTranslation({
+            mirrorId,
+            mappingId: mapping.id,
+            translatedContent: finalContent,
+            translator: translatorName
+          });
+          translatedCount++;
+        }
+      }
+    });
+    return translatedCount;
+  }
+
+  console.log('\n【ステップ1】主ドキュメント v3 をベースに英語镜像を作成（完全翻訳）...');
+
+  const doc = getDocumentById(docId, { reload: false });
+  const masterV3Content = doc.versions[doc.versions.length - 1].content;
+  const enLines = buildTranslationLines(masterV3Content, EN_TRANSLATIONS, false);
+
+  const enMirror = createMirror({
+    documentId: docId,
+    languageCode: 'en-US',
+    initialContent: null,
+    createdBy: 'Translator-Alice'
+  });
+
+  if (enMirror.error) {
+    console.error('英語镜像作成失敗:', enMirror.error);
+  } else {
+    console.log(`✅ 英語镜像作成完了 (ID: ${enMirror.id}) - 段落数: ${enMirror.total_paragraph_count}`);
+
+    const enTranslated = translateAllPending(enMirror.id, 3, EN_TRANSLATIONS, 'Translator-Alice', true);
+    console.log(`   提交翻译段落: ${enTranslated} 个`);
+
+    const enAfterTranslate = getMirrorById(enMirror.id);
+    console.log(`   待同步: ${enAfterTranslate.pending_paragraph_count} / ${enAfterTranslate.total_paragraph_count}`);
+
+    const enVersionResult = submitMirrorVersion({
+      mirrorId: enMirror.id,
+      commitMessage: 'Initial English translation based on master v3',
+      submittedBy: 'Translator-Alice'
+    });
+
+    if (enVersionResult.error) {
+      console.warn('⚠️ 英語镜像バージョン発行失敗:', enVersionResult.error);
+    } else {
+      console.log(`✅ 英語镜像 v${enVersionResult.version.version_number} 発行完了`);
+      console.log(`   主ドキュメント v${enVersionResult.mirror.synced_master_version} ベース`);
+      console.log(`   同期状態: ${enVersionResult.mirror.sync_status} (${enVersionResult.mirror.synchronized_paragraph_count}/${enVersionResult.mirror.total_paragraph_count})`);
+    }
+  }
+
+  console.log('\n【ステップ2】主ドキュメント v3 をベースに日本語镜像を作成（部分翻訳、意図的に半数残し）...');
+
+  const jaMirror = createMirror({
+    documentId: docId,
+    languageCode: 'ja-JP',
+    initialContent: null,
+    createdBy: 'Translator-Bob'
+  });
+
+  if (jaMirror.error) {
+    console.error('日本語镜像作成失敗:', jaMirror.error);
+  } else {
+    console.log(`✅ 日本語镜像作成完了 (ID: ${jaMirror.id}) - 段落数: ${jaMirror.total_paragraph_count}`);
+
+    const jaTranslated = translateAllPending(jaMirror.id, 3, JA_PARTIAL_TRANSLATIONS, 'Translator-Bob', false);
+    console.log(`   提交翻译段落: ${jaTranslated} 个（意図的に一部未翻訳）`);
+
+    const jaAfterTranslate = getMirrorById(jaMirror.id);
+    console.log(`   状態: 待同期 - 同期済み ${jaAfterTranslate.synchronized_paragraph_count} / 全体 ${jaAfterTranslate.total_paragraph_count}, 未処理 ${jaAfterTranslate.pending_paragraph_count} 段落`);
+  }
+
+  console.log('\n【ステップ3】主ドキュメントを v3 → v4 に更新（镜像状態遷移をデモ）...');
+
+  const docBefore = getDocumentById(docId, { reload: false });
+  const oldVersionNum = docBefore && docBefore.versions.length > 0
+    ? docBefore.versions[docBefore.versions.length - 1].version_number
+    : 0;
+
+  const v4Content = `プロジェクト開発計画
+
+一、プロジェクト概要
+本プロジェクトは、複数人によるリアルタイム編集と文書管理をサポートするオンラインコラボレーションプラットフォームの開発を目的としています。
+プラットフォームはマイクロサービスアーキテクチャを採用し、高可用性と拡張性を備えています。
+対象ユーザー：企業チーム、教育機関、個人クリエイター。
+**新規追加**: オープンソースコミュニティ向けの特別プランを提供予定。
+
+二、主な機能
+1. ユーザー登録とログイン
+2. 文書の作成と編集
+3. リアルタイムコラボレーション機能
+4. バージョン履歴管理
+5. コメントと注釈機能
+6. 文書エクスポート（PDF、Word）
+7. チーム権限管理
+8. **新規追加**: AI翻訳アシスト（多语言镜像連携）
+9. **新規追加**: 変更履歴の可視化グラフ
+
+三、開発期間
+第一版完成までに**4.5か月**を予定。
+詳細マイルストーン：
+- 1か月目：要件分析とアーキテクチャ設計
+- 2か月目：コア機能開発
+- 3か月目：拡張機能と最適化
+- 4か月目：テストと本番リリース準備
+- **変更**: 4.5か月目：ベータテストと最終調整
+
+四、チーム体制
+- フロントエンド開発：3名
+- バックエンド開発：2名
+- テスト：1名
+- プロダクトマネージャー：1名
+- UIデザイナー：1名
+- **新規追加**: 多语言担当：1名
+
+五、技術スタック
+フロントエンド：React + TypeScript + Redux + **新規**: i18n国際化対応
+バックエンド：Node.js + Express + MongoDB
+データベース：MongoDB + Redisキャッシュ
+リアルタイム通信：WebSocket
+デプロイ：Docker + Kubernetes
+**削除予定**: レガシーモノリスサポート
+
+六、リスク評価
+1. 技術リスク：リアルタイムコラボレーションアルゴリズムの複雑さが高い
+2. スケジュールリスク：機能拡張による延期の可能性
+3. 品質リスク：多人数コラボレーションシナリオのテスト難度
+4. **新規追加**: 多语言镜像の同期タイムラグによる不整合リスク
+
+対策：
+- 事前にキーテクノロジーの予備調査を実施
+- アジャイル開発を採用し、段階的にデリバリー
+- 自動テストカバレッジの拡充
+- **新規**: 镜像同期アルゴリズムの段階的なリリース`;
+
+  const updatedDoc = updateDocument(docId, {
+    content: v4Content,
+    commit_message: 'v4: 多语言镜像功能发布准备，新增AI翻译、调整团队'
+  });
+
+  const docAfter = getDocumentById(docId, { reload: false });
+  const newVersionNum = docAfter && docAfter.versions.length > 0
+    ? docAfter.versions[docAfter.versions.length - 1].version_number
+    : oldVersionNum;
+
+  if (newVersionNum > oldVersionNum) {
+    detectChangesOnMasterUpdate(docId, oldVersionNum, newVersionNum);
+    console.log(`✅ 主ドキュメント v${oldVersionNum} → v${newVersionNum} 更新完了！`);
+    console.log('   镜像过期段落検知完了！');
+
+    const finalMirrors = listMirrorsByDocument(docId);
+    console.log('\n【最終状態】');
+    finalMirrors.forEach(m => {
+      const statusText = m.sync_status === 'synced' ? '✅ 同期済み'
+        : m.sync_status === 'outdated' ? '⚠️ 主ドキュメント更新済み（过期段落あり）'
+        : '⏳ 未処理あり';
+      console.log(`\n  ${m.language_flag} ${m.language_name} (${m.language_code}):`);
+      console.log(`    - 同期状態: ${m.sync_status} → ${statusText}`);
+      console.log(`    - 主ドキュメント: v${m.synced_master_version} → 最新 v${m.latest_master_version}`);
+      console.log(`    - 段落: 同期済み ${m.synchronized_paragraph_count} / 全体 ${m.total_paragraph_count} / 未処理 ${m.pending_paragraph_count}`);
+    });
+
+    const latestVersion = docAfter.versions[docAfter.versions.length - 1];
+    addTag(docId, latestVersion.id, '镜像演示版');
+
+    console.log('\n💡 演示提示：');
+    console.log('   1. 镜像管理 → http://localhost:3000/mirror-management.html?docId=1');
+    console.log('   2. 2つの镜像の状態違いを確認');
+    console.log('      🇺🇸 英語: 同期済みだったが主ドキュメント更新により ⚠️outdated 状態に');
+    console.log('      🇯🇵 日本語: 元々未処理あり ⏳pending 状態が継続');
+    console.log('   3. 「翻訳ワークベンチ」を開いて左右対照インターフェースで过期段落を確認');
+    console.log('   4. 过期段落を翻訳・提交 → 全て完了したら镜像バージョンを発行可能');
+    console.log('   5. 別ブラウザで同じ镜像を開き、片方で提交するともう片方のリストが实时更新されることを確認');
+    console.log('   6. 主ドキュメントを再度更新すると、同期済み镜像も自动的に未処理状態に戻ります');
+  } else {
+    console.log('⚠️ 主ドキュメントに更新はありませんでした');
+  }
+
+  console.log('\n✅ 多语言镜像演示データ初期化完了！');
 }
 
 module.exports = seedDemoData;

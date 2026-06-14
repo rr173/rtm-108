@@ -32,7 +32,13 @@ const OPERATION_TYPES = {
   PATCH_CREATE: 'patch.create',
   PATCH_MERGE: 'patch.merge',
   VERSION_VIEW: 'version.view',
-  VERSION_DIFF: 'version.diff'
+  VERSION_DIFF: 'version.diff',
+  MIRROR_CREATE: 'mirror.create',
+  MIRROR_DELETE: 'mirror.delete',
+  MIRROR_VERSION_CREATE: 'mirror.version_create',
+  PARAGRAPH_TRANSLATE: 'paragraph.translate',
+  PARAGRAPH_DELETE_CONFIRM: 'paragraph.delete_confirm',
+  MIRROR_SYNC_STATUS_CHANGE: 'mirror.sync_status_change'
 };
 
 const RESULT_TYPES = {

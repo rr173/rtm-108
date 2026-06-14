@@ -269,4 +269,333 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function switchTab(tabName) {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tabName);
+  });
+
+  ['contracts', 'documents', 'i18n-demo'].forEach(tab => {
+    const el = document.getElementById('tab-' + tab);
+    if (el) {
+      el.style.display = tab === tabName ? 'block' : 'none';
+    }
+  });
+
+  if (tabName === 'documents' && !window._docsLoaded) {
+    loadDocuments();
+    window._docsLoaded = true;
+  }
+  if (tabName === 'i18n-demo' && !window._i18nLoaded) {
+    loadI18nDemo();
+    window._i18nLoaded = true;
+  }
+}
+
+function showCreateDocModal() {
+  document.getElementById('createDocModal').classList.add('active');
+  document.getElementById('newDocTitle').value = '';
+  document.getElementById('newDocDesc').value = '';
+  document.getElementById('newDocContent').value = '';
+}
+
+function hideCreateDocModal() {
+  document.getElementById('createDocModal').classList.remove('active');
+}
+
+async function loadDocuments() {
+  try {
+    const res = await fetch('/api/documents');
+    const docs = await res.json();
+    renderDocuments(docs);
+  } catch (e) {
+    console.error('加载文档失败:', e);
+    document.getElementById('documentList').innerHTML = `
+      <div class="empty-state">
+        <h3>加载失败</h3>
+        <p>请刷新页面重试</p>
+      </div>
+    `;
+  }
+}
+
+function renderDocuments(docs) {
+  const listEl = document.getElementById('documentList');
+
+  if (!docs || docs.length === 0) {
+    listEl.innerHTML = `
+      <div class="empty-state" style="grid-column: 1/-1;">
+        <h3>暂无文档</h3>
+        <p>点击「新建文档」创建第一份文档</p>
+      </div>
+    `;
+    return;
+  }
+
+  listEl.innerHTML = docs.map(d => {
+    const latestVer = d.versions && d.versions.length > 0 ? d.versions[d.versions.length - 1] : null;
+    return `
+      <div class="card contract-card" style="cursor:pointer;" onclick="viewDocument(${d.id})">
+        <div class="card-title">${escapeHtml(d.title)}</div>
+        ${d.description ? `<div style="font-size:13px;color:#64748b;margin-bottom:12px;">${escapeHtml(d.description)}</div>` : ''}
+        <div class="contract-meta">
+          <span>📝 v${d.latestVersion || d.versionCount || 0} 版本</span>
+        </div>
+        <div class="contract-meta" style="margin-top: 8px;">
+          <span>最后更新: ${formatDate(d.updated_at)}</span>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+          <a class="btn btn-sm" href="/diff/${d.id}"
+             onclick="event.stopPropagation();"
+             style="padding:6px 12px;font-size:12px;">
+            📜 版本管理
+          </a>
+          <a class="btn btn-sm btn-primary" href="/mirrors/${d.id}"
+             onclick="event.stopPropagation();"
+             style="padding:6px 12px;font-size:12px;background:#667eea;border-color:#667eea;">
+            🌐 镜像管理
+          </a>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function viewDocument(id) {
+  window.location.href = `/diff/${id}`;
+}
+
+async function createDocument() {
+  const title = document.getElementById('newDocTitle').value.trim();
+  const content = document.getElementById('newDocContent').value;
+  const description = document.getElementById('newDocDesc').value.trim();
+
+  if (!title) {
+    showToast('请输入文档标题', 'error');
+    return;
+  }
+  if (!content) {
+    showToast('请输入文档内容', 'error');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title,
+        content,
+        description,
+        is_public: true
+      })
+    });
+
+    if (!res.ok) throw new Error('创建失败');
+
+    showToast('文档创建成功', 'success');
+    hideCreateDocModal();
+    loadDocuments();
+  } catch (e) {
+    showToast('创建失败: ' + e.message, 'error');
+  }
+}
+
+let demoWs = null;
+
+async function loadI18nDemo() {
+  try {
+    const demoDocId = 1;
+    const [mirrorsRes, docRes] = await Promise.all([
+      fetch(`/api/documents/${demoDocId}/mirrors`),
+      fetch(`/api/documents/${demoDocId}`)
+    ]);
+
+    const mirrors = await mirrorsRes.json();
+    let doc = null;
+    if (docRes.ok) doc = await docRes.json();
+
+    initDemoWs(demoDocId);
+    renderDemoMirrors(mirrors, doc);
+  } catch (e) {
+    console.error('加载演示镜像失败:', e);
+    document.getElementById('demoMirrorList').innerHTML = `
+      <p style="text-align:center;color:#ef4444;">加载演示数据失败: ${escapeHtml(e.message)}</p>
+    `;
+  }
+}
+
+function initDemoWs(docId) {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  demoWs = new WebSocket(`${protocol}//${window.location.host}/ws`);
+
+  demoWs.onopen = () => {
+    demoWs.send(JSON.stringify({
+      type: 'subscribe_document_mirrors',
+      documentId: docId
+    }));
+  };
+
+  demoWs.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.type === 'document_mirrors_status' || data.type === 'document_mirrors_updated') {
+        if (data.mirrors) {
+          fetch(`/api/documents/${docId}`).then(r => r.ok ? r.json() : null).then(doc => {
+            renderDemoMirrors(data.mirrors, doc);
+          });
+        }
+      }
+    } catch (e) {
+      console.error('WS消息解析失败:', e);
+    }
+  };
+}
+
+function renderDemoMirrors(mirrors, doc) {
+  const container = document.getElementById('demoMirrorList');
+
+  if (!doc) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="emoji">📋</div>
+        <h3>演示主文档不存在</h3>
+        <p>请先确保已正确初始化演示数据</p>
+      </div>
+    `;
+    return;
+  }
+
+  const docCard = `
+    <div style="padding:16px;background:#f8fafc;border-radius:12px;margin-bottom:20px;border:1px solid #e2e8f0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+        <div>
+          <div style="font-size:13px;color:#64748b;">📄 主文档</div>
+          <div style="font-size:18px;font-weight:600;margin-top:4px;">${escapeHtml(doc.title)}</div>
+          <div style="font-size:13px;color:#64748b;margin-top:4px;">
+            当前版本: <strong>v${doc.versions?.length || doc.latestVersion || 0}</strong> · ${doc.description || ''}
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <a class="btn btn-sm" href="/diff/${doc.id}">
+            📜 版本历史
+          </a>
+          <a class="btn btn-sm btn-primary" href="/mirrors/${doc.id}">
+            🌐 镜像管理
+          </a>
+        </div>
+      </div>
+    </div>
+  `;
+
+  if (!mirrors || mirrors.length === 0) {
+    container.innerHTML = docCard + `
+      <div class="empty-state">
+        <div class="emoji">🌍</div>
+        <h3>暂无语言镜像</h3>
+        <p>点击下方按钮去镜像管理页面创建</p>
+        <a class="btn btn-primary" href="/mirrors/${doc.id}" style="margin-top:16px;">
+          ➕ 创建第一个语言镜像
+        </a>
+      </div>
+    `;
+    return;
+  }
+
+  let mirrorsHtml = '<div class="mirror-list">';
+  mirrors.forEach(m => {
+    const progress = m.total_paragraph_count > 0
+      ? Math.round(m.synchronized_paragraph_count / m.total_paragraph_count * 100)
+      : 0;
+
+    const syncBadgeClass = m.sync_status === 'synced' ? 'synced' :
+                           m.sync_status === 'outdated' ? 'outdated' : 'pending';
+    const syncBadgeText = m.sync_status === 'synced' ? '✅ 已同步' :
+                          m.sync_status === 'outdated' ? '⚠️ 主文档已更新' : '⏳ 待同步';
+
+    mirrorsHtml += `
+      <div class="mirror-card">
+        <div class="mirror-card-header">
+          <div class="mirror-language">
+            <span class="flag">${m.language_flag}</span>
+            <div class="info">
+              <h3>${escapeHtml(m.language_name)}</h3>
+              <div class="code">${m.language_code}</div>
+            </div>
+          </div>
+          <span class="sync-status-badge ${syncBadgeClass}">
+            <span class="dot"></span>${syncBadgeText}
+          </span>
+        </div>
+
+        <div class="mirror-stats">
+          <div class="mirror-stat synced">
+            <div class="value">${m.synchronized_paragraph_count}</div>
+            <div class="label">已同步</div>
+          </div>
+          <div class="mirror-stat pending">
+            <div class="value">${m.pending_paragraph_count}</div>
+            <div class="label">待处理</div>
+          </div>
+          <div class="mirror-stat outdated">
+            <div class="value">${m.latest_master_version - m.synced_master_version}</div>
+            <div class="label">落后版本</div>
+          </div>
+        </div>
+
+        <div class="progress-bar">
+          <div class="progress-bar-fill" style="width:${progress}%"></div>
+        </div>
+        <div class="progress-text">
+          <span>同步进度</span>
+          <span>${progress}% (${m.synchronized_paragraph_count}/${m.total_paragraph_count})</span>
+        </div>
+
+        <div class="version-info">
+          <div class="row">
+            <span class="label">基于主文档</span>
+            <span>v${m.synced_master_version}</span>
+          </div>
+          <div class="row">
+            <span class="label">最新主文档</span>
+            <span>v${m.latest_master_version}</span>
+          </div>
+        </div>
+
+        <div class="mirror-actions">
+          <a class="btn btn-primary btn-sm" href="/translate/${m.id}" style="text-decoration:none;flex:1;text-align:center;justify-content:center;display:inline-flex;">
+            🖊️ 翻译工作台
+          </a>
+          <a class="btn btn-sm" href="/mirrors/${m.document_id}" style="text-decoration:none;flex:1;text-align:center;justify-content:center;display:inline-flex;">
+            📜 详细
+          </a>
+        </div>
+      </div>
+    `;
+  });
+  mirrorsHtml += '</div>';
+
+  container.innerHTML = docCard + mirrorsHtml;
+
+  if (mirrors.some(m => m.sync_status === 'outdated' || m.pending_paragraph_count > 0)) {
+    container.innerHTML += `
+      <div style="margin-top:24px;padding:16px;background:#fffbeb;border:1px solid #fde68a;border-radius:12px;">
+        <div style="display:flex;align-items:flex-start;gap:12px;">
+          <div style="font-size:24px;">💡</div>
+          <div>
+            <div style="font-weight:600;color:#92400e;margin-bottom:4px;">
+              提示：当前有待同步内容
+            </div>
+            <div style="font-size:13px;color:#78350f;line-height:1.7;">
+              1. 点击「翻译工作台」进入左右对照界面<br>
+              2. 过期段落会高亮显示，只需处理这些待同步段落<br>
+              3. 全部处理完成后才能发布新版本镜像<br>
+              4. 主文档再次更新时，已同步镜像会自动回到待同步状态
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+}
+
 loadContracts();

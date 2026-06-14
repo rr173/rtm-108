@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>翻译工作台 - 多语言镜像</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/mirror.css">
+</head>
+<body>
+  <div class="page-container" style="max-width:1800px;">
+    <div id="workbenchHeader" class="mirror-header"></div>
+
+    <div id="workbenchToolbar" class="workbench-toolbar"></div>
+
+    <div id="workbenchContainer" class="workbench-container">
+      <div class="workbench-panel">
+        <div class="panel-header">
+          <h3>📄 主文档（原文）</h3>
+          <span style="font-size:12px;color:#64748b;">左栏参考</span>
+        </div>
+        <div id="masterPanel" class="panel-content"></div>
+      </div>
+      <div class="workbench-panel">
+        <div class="panel-header">
+          <h3>✏️ 目标语言（译文）</h3>
+          <span style="font-size:12px;color:#64748b;">Ctrl+Enter 快速提交</span>
+        </div>
+        <div id="targetPanel" class="panel-content"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <div id="mainContent" style="display:none;"></div>
+
+  <script src="/js/translation-workbench.js"></script>
+</body>
+</html>

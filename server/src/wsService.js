@@ -1,6 +1,8 @@
 const WebSocket = require('ws');
 const { getContractById, checkAndUpdateExpiredContracts } = require('./contractService');
 const { getReviewById, getCommentsByReview } = require('./reviewService');
+const { listMirrorsByDocument, getMirrorById, getTranslationWorkbench } = require('./mirrorService');
+const { getDocumentById } = require('./documentService');
 
 class WsService {
   constructor(server) {
@@ -9,6 +11,10 @@ class WsService {
     this.clientContracts = new Map();
     this.reviewSubscriptions = new Map();
     this.clientReviews = new Map();
+    this.documentMirrorSubscriptions = new Map();
+    this.clientDocumentMirrors = new Map();
+    this.mirrorSubscriptions = new Map();
+    this.clientMirrors = new Map();
 
     this.wss.on('connection', (ws) => {
       ws.id = Math.random().toString(36).substr(2, 9);
@@ -49,8 +55,170 @@ class WsService {
       case 'unsubscribe_review':
         this.unsubscribeReview(ws, data.reviewId);
         break;
+      case 'subscribe_document_mirrors':
+        this.subscribeDocumentMirrors(ws, data.documentId);
+        break;
+      case 'unsubscribe_document_mirrors':
+        this.unsubscribeDocumentMirrors(ws, data.documentId);
+        break;
+      case 'subscribe_mirror':
+        this.subscribeMirror(ws, data.mirrorId);
+        break;
+      case 'unsubscribe_mirror':
+        this.unsubscribeMirror(ws, data.mirrorId);
+        break;
       default:
         ws.send(JSON.stringify({ type: 'error', message: 'Unknown message type' }));
+    }
+  }
+
+  subscribeDocumentMirrors(ws, documentId) {
+    if (!this.documentMirrorSubscriptions.has(documentId)) {
+      this.documentMirrorSubscriptions.set(documentId, new Set());
+    }
+    this.documentMirrorSubscriptions.get(documentId).add(ws);
+
+    if (!this.clientDocumentMirrors.has(ws)) {
+      this.clientDocumentMirrors.set(ws, new Set());
+    }
+    this.clientDocumentMirrors.get(ws).add(documentId);
+
+    const doc = getDocumentById(documentId, { reload: false });
+    const mirrors = listMirrorsByDocument(documentId);
+    ws.send(JSON.stringify({
+      type: 'document_mirrors_status',
+      documentId,
+      document_title: doc?.title,
+      mirrors
+    }));
+  }
+
+  unsubscribeDocumentMirrors(ws, documentId) {
+    if (this.documentMirrorSubscriptions.has(documentId)) {
+      this.documentMirrorSubscriptions.get(documentId).delete(ws);
+    }
+    if (this.clientDocumentMirrors.has(ws)) {
+      this.clientDocumentMirrors.get(ws).delete(documentId);
+    }
+  }
+
+  notifyDocumentMirrorsUpdate(documentId) {
+    const doc = getDocumentById(documentId, { reload: false });
+    const mirrors = listMirrorsByDocument(documentId);
+    const message = JSON.stringify({
+      type: 'document_mirrors_updated',
+      documentId,
+      document_title: doc?.title,
+      mirrors
+    });
+
+    if (this.documentMirrorSubscriptions.has(documentId)) {
+      this.documentMirrorSubscriptions.get(documentId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+
+    const relatedMirrorIds = mirrors.map(m => m.id);
+    relatedMirrorIds.forEach(mirrorId => {
+      this.notifyMirrorUpdate(mirrorId, 'master_updated');
+    });
+  }
+
+  subscribeMirror(ws, mirrorId) {
+    if (!this.mirrorSubscriptions.has(mirrorId)) {
+      this.mirrorSubscriptions.set(mirrorId, new Set());
+    }
+    this.mirrorSubscriptions.get(mirrorId).add(ws);
+
+    if (!this.clientMirrors.has(ws)) {
+      this.clientMirrors.set(ws, new Set());
+    }
+    this.clientMirrors.get(ws).add(mirrorId);
+
+    const workbench = getTranslationWorkbench(mirrorId);
+    if (workbench && !workbench.error) {
+      ws.send(JSON.stringify({
+        type: 'mirror_status',
+        mirrorId,
+        workbench
+      }));
+    } else {
+      ws.send(JSON.stringify({
+        type: 'error',
+        message: workbench?.error || '镜像不存在'
+      }));
+    }
+  }
+
+  unsubscribeMirror(ws, mirrorId) {
+    if (this.mirrorSubscriptions.has(mirrorId)) {
+      this.mirrorSubscriptions.get(mirrorId).delete(ws);
+    }
+    if (this.clientMirrors.has(ws)) {
+      this.clientMirrors.get(ws).delete(mirrorId);
+    }
+  }
+
+  notifyMirrorUpdate(mirrorId, eventType = 'mirror_updated') {
+    const workbench = getTranslationWorkbench(mirrorId);
+    if (workbench && !workbench.error) {
+      const message = JSON.stringify({
+        type: eventType,
+        mirrorId,
+        workbench
+      });
+
+      if (this.mirrorSubscriptions.has(mirrorId)) {
+        this.mirrorSubscriptions.get(mirrorId).forEach(ws => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(message);
+          }
+        });
+      }
+    }
+  }
+
+  notifyMirrorParagraphUpdate(mirrorId, mappingId, eventType = 'paragraph_updated') {
+    const message = JSON.stringify({
+      type: eventType,
+      mirrorId,
+      mappingId
+    });
+
+    if (this.mirrorSubscriptions.has(mirrorId)) {
+      this.mirrorSubscriptions.get(mirrorId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+
+    setTimeout(() => {
+      this.notifyMirrorUpdate(mirrorId, 'mirror_workbench_updated');
+    }, 50);
+  }
+
+  notifyMirrorVersionUpdate(mirrorId, eventType = 'mirror_version_updated') {
+    const mirror = getMirrorById(mirrorId);
+    const message = JSON.stringify({
+      type: eventType,
+      mirrorId,
+      mirror
+    });
+
+    if (this.mirrorSubscriptions.has(mirrorId)) {
+      this.mirrorSubscriptions.get(mirrorId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+
+    if (mirror) {
+      const doc = getDocumentById(mirror.document_id, { reload: false });
+      this.notifyDocumentMirrorsUpdate(mirror.document_id);
     }
   }
 
@@ -244,6 +412,26 @@ class WsService {
         }
       });
       this.clientReviews.delete(ws);
+    }
+
+    const docMirrors = this.clientDocumentMirrors.get(ws);
+    if (docMirrors) {
+      docMirrors.forEach(documentId => {
+        if (this.documentMirrorSubscriptions.has(documentId)) {
+          this.documentMirrorSubscriptions.get(documentId).delete(ws);
+        }
+      });
+      this.clientDocumentMirrors.delete(ws);
+    }
+
+    const mirrors = this.clientMirrors.get(ws);
+    if (mirrors) {
+      mirrors.forEach(mirrorId => {
+        if (this.mirrorSubscriptions.has(mirrorId)) {
+          this.mirrorSubscriptions.get(mirrorId).delete(ws);
+        }
+      });
+      this.clientMirrors.delete(ws);
     }
   }
 }
