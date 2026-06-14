@@ -9,6 +9,23 @@
 </head>
 <body>
   <div class="page-container">
+    <div class="top-bar" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 10px 20px; display: flex; justify-content: space-between; align-items: center;">
+      <div style="color: white; font-size: 14px;">
+        <span>💡 演示提示：切换不同用户体验认领和权限控制</span>
+      </div>
+      <div class="user-selector" style="display: flex; align-items: center; gap: 8px;">
+        <label style="font-size: 13px; color: #fff;">当前用户:</label>
+        <select id="currentUserSelect" onchange="changeCurrentUser(this.value)" style="padding: 6px 10px; border-radius: 6px; border: none; font-size: 13px;">
+          <option value="">匿名用户</option>
+          <option value="user-admin">user-admin (管理员)</option>
+          <option value="user-editor">user-editor (编辑者)</option>
+          <option value="user-viewer">user-viewer (只读)</option>
+          <option value="translator-alice">translator-alice (翻译员Alice)</option>
+          <option value="translator-bob">translator-bob (翻译员Bob)</option>
+          <option value="translator-carol">translator-carol (翻译员Carol)</option>
+        </select>
+      </div>
+    </div>
     <div id="mirrorHeader" class="mirror-header"></div>
 
     <div id="mainContent">

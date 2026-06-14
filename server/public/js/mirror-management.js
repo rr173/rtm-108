@@ -44,8 +44,24 @@ class MirrorManagement {
       return;
     }
     await this.loadCurrentUser();
+    this.initUserSelector();
     this.initWebSocket();
     this.loadData();
+  }
+
+  initUserSelector() {
+    const selector = document.getElementById('currentUserSelect');
+    if (selector) {
+      selector.value = this.currentUserId;
+    }
+    window.changeCurrentUser = (userId) => {
+      this.currentUserId = userId || '';
+      localStorage.setItem('currentUserId', this.currentUserId);
+      this.showToast(userId ? `已切换为用户: ${userId}` : '已切换为匿名用户', 'info');
+      this.loadCurrentUser().then(() => {
+        this.loadData();
+      });
+    };
   }
 
   async loadCurrentUser() {
@@ -414,11 +430,11 @@ class MirrorManagement {
         const isClaimed = p.claim?.is_claimed;
         const claimant = p.claim?.claimed_by_name || p.claim?.claimed_by || '';
         const isExpired = p.claim?.is_expired;
+        const canAssign = this.canManage;
 
         paragraphsHtml += `
-          <label class="paragraph-assign-item">
-            <input type="checkbox" class="paragraph-checkbox" value="${p.mapping_id}" 
-                   ${!isClaimed || isExpired ? '' : 'disabled'}>
+          <label class="paragraph-assign-item ${isClaimed && !isExpired ? 'has-claim' : ''}">
+            <input type="checkbox" class="paragraph-checkbox" value="${p.mapping_id}">
             <div class="paragraph-assign-content">
               <div class="paragraph-assign-header">
                 <span class="line-num">L${p.master_line_index + 1}</span>
@@ -427,6 +443,11 @@ class MirrorManagement {
                   <span class="claim-tag ${isExpired ? 'expired' : ''}">
                     ${isExpired ? '⏰ 已超时' : `👤 ${claimant} 认领中`}
                   </span>
+                  ${canAssign ? `
+                    <button class="btn btn-xs btn-reassign" data-mapping-id="${p.mapping_id}" data-current-claimant="${claimant}" data-current-claimant-id="${p.claim?.claimed_by || ''}">
+                      🔄 转交
+                    </button>
+                  ` : ''}
                 ` : '<span class="claim-tag unclaimed">📭 待认领</span>'}
               </div>
               <div class="paragraph-assign-text">${this.escapeHtml(p.master_content)}</div>
@@ -472,6 +493,79 @@ class MirrorManagement {
       `;
 
       document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+      this.currentBatchAssignMirrorId = mirrorId;
+      document.querySelectorAll('.btn-reassign').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const mappingId = parseInt(btn.dataset.mappingId);
+          const currentClaimant = btn.dataset.currentClaimant;
+          const currentClaimantId = btn.dataset.currentClaimantId;
+          this.showReassignModal(mirrorId, mappingId, currentClaimant, currentClaimantId);
+        });
+      });
+    } catch (e) {
+      this.showToast('❌ ' + e.message, 'error');
+    }
+  }
+
+  showReassignModal(mirrorId, mappingId, currentClaimant, currentClaimantId) {
+    const modalHtml = `
+      <div class="modal-backdrop" id="reassignModal">
+        <div class="modal" style="width:400px;">
+          <div class="modal-header">
+            <h3>🔄 转交段落</h3>
+            <button class="modal-close" onclick="document.getElementById('reassignModal').remove()">×</button>
+          </div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>当前认领人</label>
+              <div style="padding:8px;background:#f1f5f9;border-radius:6px;color:#475569;">
+                ${this.escapeHtml(currentClaimant || currentClaimantId || '未知')}
+              </div>
+            </div>
+            <div class="form-group">
+              <label>转交给</label>
+              <input type="text" id="reassignUserId" placeholder="输入目标用户ID" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:6px;">
+              <small style="color:#64748b;">例如：translator-alice、user-editor 等</small>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn" onclick="document.getElementById('reassignModal').remove()">取消</button>
+            <button class="btn btn-primary" onclick="window.management.confirmReassign(${mirrorId}, ${mappingId})">确认转交</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    setTimeout(() => {
+      document.getElementById('reassignUserId')?.focus();
+    }, 100);
+  }
+
+  async confirmReassign(mirrorId, mappingId) {
+    const userId = document.getElementById('reassignUserId')?.value.trim();
+    if (!userId) {
+      this.showToast('请输入目标用户ID', 'warning');
+      return;
+    }
+
+    try {
+      const res = await this.apiFetch(`/api/mirrors/${mirrorId}/paragraphs/${mappingId}/assign`, {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: userId,
+          user_name: userId
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '转交失败');
+
+      document.getElementById('reassignModal')?.remove();
+      document.getElementById('batchAssignModal')?.remove();
+      this.showToast('✅ 转交成功！', 'success');
+      this.loadData();
     } catch (e) {
       this.showToast('❌ ' + e.message, 'error');
     }

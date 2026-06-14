@@ -1057,9 +1057,52 @@ body {
   flex-shrink: 0;
 }
 
-.paragraph-assign-item:has(input:disabled) {
-  opacity: 0.6;
-  cursor: not-allowed;
+.paragraph-assign-item.has-claim {
+  border-left: 3px solid #667eea;
+  background: #f8faff;
+}
+
+.paragraph-assign-item.has-claim:hover {
+  background: #f0f4ff;
+}
+
+.btn-xs {
+  padding: 2px 8px;
+  font-size: 11px;
+  min-height: 24px;
+  line-height: 1.2;
+}
+
+.btn-reassign {
+  background: #667eea;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-left: auto;
+}
+
+.btn-reassign:hover {
+  background: #5a67d8;
+  transform: translateY(-1px);
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.form-group small {
+  display: block;
+  margin-top: 4px;
 }
 
 .paragraph-assign-content {

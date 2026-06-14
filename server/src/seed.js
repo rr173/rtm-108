@@ -893,6 +893,11 @@ function seedClaimDemoData(docId) {
     { id: 'translator-carol', name: '翻译员Carol' }
   ];
 
+  demoUsers.forEach(user => {
+    addCollaborator(docId, user.id, 'editor', 'system-init');
+  });
+  console.log('   ✅ 已为翻译人员Alice/Bob/Carol添加文档编辑权限');
+
   const aliceClaimed = [];
   const bobClaimed = [];
   let expiredClaim = null;

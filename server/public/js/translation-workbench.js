@@ -47,10 +47,26 @@ class TranslationWorkbench {
       return;
     }
     await this.loadCurrentUser();
+    this.initUserSelector();
     this.initWebSocket();
     this.loadWorkbench();
     this.bindEvents();
     this.startClaimCountdown();
+  }
+
+  initUserSelector() {
+    const selector = document.getElementById('currentUserSelect');
+    if (selector) {
+      selector.value = this.currentUserId;
+    }
+    window.changeCurrentUser = (userId) => {
+      this.currentUserId = userId || '';
+      localStorage.setItem('currentUserId', this.currentUserId);
+      this.showToast(userId ? `已切换为用户: ${userId}` : '已切换为匿名用户', 'info');
+      this.loadCurrentUser().then(() => {
+        this.loadWorkbench();
+      });
+    };
   }
 
   async loadCurrentUser() {

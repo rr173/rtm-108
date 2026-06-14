@@ -37,9 +37,38 @@ class TranslationWorkload {
       return;
     }
 
+    this.initUserSelector();
     this.initWebSocket();
     await this.loadData();
     this.startAutoRefresh();
+  }
+
+  initUserSelector() {
+    const selector = document.getElementById('currentUserSelect');
+    if (selector) {
+      selector.value = this.currentUserId;
+    }
+    window.changeCurrentUser = (userId) => {
+      this.currentUserId = userId || '';
+      localStorage.setItem('currentUserId', this.currentUserId);
+      this.showToast(userId ? `已切换为用户: ${userId}` : '已切换为匿名用户', 'info');
+      this.loadData();
+    };
+  }
+
+  showToast(msg, type = 'success') {
+    let container = document.getElementById('toastContainer');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toastContainer';
+      container.className = 'toast-container';
+      document.body.appendChild(container);
+    }
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = msg;
+    container.appendChild(toast);
+    setTimeout(() => toast.remove(), 3000);
   }
 
   initWebSocket() {
