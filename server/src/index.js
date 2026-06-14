@@ -42,6 +42,7 @@ const {
   updateReviewStatus,
   deleteReview,
   addComment,
+  getCommentById,
   getCommentsByReview,
   updateComment,
   resolveComment,
@@ -135,28 +136,12 @@ function requireDocPermission(requiredRole) {
 
     const doc = getDocumentById(docId, { reload: false });
     if (!doc) {
-      createLog({
-        userId,
-        operation: OPERATION_TYPES.DOCUMENT_VIEW,
-        documentId: docId,
-        result: RESULT_TYPES.FAILED,
-        params: { doc_id: docId },
-        errorMessage: '文档不存在'
-      });
       return res.status(404).json({ error: '文档不存在' });
     }
 
     const permissionResult = checkPermission(docId, userId, requiredRole, doc.is_public);
 
     if (!permissionResult.allowed) {
-      createLog({
-        userId,
-        operation: requiredRole === ROLES.VIEWER ? OPERATION_TYPES.DOCUMENT_VIEW : OPERATION_TYPES.DOCUMENT_EDIT,
-        documentId: docId,
-        result: RESULT_TYPES.DENIED,
-        params: { doc_id: docId, required_role: requiredRole, actual_role: permissionResult.role },
-        errorMessage: permissionResult.reason || '权限不足'
-      });
       return res.status(403).json({
         error: permissionResult.reason || '权限不足',
         permission_required: requiredRole,
@@ -174,32 +159,39 @@ function requireDocPermission(requiredRole) {
 
 function logAudit(operation, options = {}) {
   return (req, res, next) => {
-    const userId = req.currentUser.id;
-    const docId = options.getDocumentId ? options.getDocumentId(req) : (parseInt(req.params.id || req.params.documentId) || null);
-    const params = options.getParams ? options.getParams(req) : {
-      query: req.query,
-      body: Object.keys(req.body || {}).length > 0 ? req.body : undefined
-    };
-
     const originalSend = res.send.bind(res);
+
     res.send = (data) => {
-      let result = RESULT_TYPES.SUCCESS;
-      let errorMessage = null;
-
-      if (res.statusCode === 403) {
-        result = RESULT_TYPES.DENIED;
-        if (data && typeof data === 'object' && data.error) {
-          errorMessage = data.error;
-        }
-      } else if (res.statusCode >= 400) {
-        result = RESULT_TYPES.FAILED;
-        if (data && typeof data === 'object' && data.error) {
-          errorMessage = data.error;
-        }
-      }
-
       if (!req._auditLogged) {
+        req._auditLogged = true;
+
         try {
+          const userId = req.currentUser.id;
+          const docId = options.getDocumentId
+            ? options.getDocumentId(req)
+            : (parseInt(req.params.id || req.params.documentId) || null);
+          const params = options.getParams
+            ? options.getParams(req)
+            : {
+                query: req.query,
+                body: Object.keys(req.body || {}).length > 0 ? req.body : undefined
+              };
+
+          let result = RESULT_TYPES.SUCCESS;
+          let errorMessage = null;
+
+          if (res.statusCode === 403) {
+            result = RESULT_TYPES.DENIED;
+            if (data && typeof data === 'object' && data.error) {
+              errorMessage = data.error;
+            }
+          } else if (res.statusCode >= 400) {
+            result = RESULT_TYPES.FAILED;
+            if (data && typeof data === 'object' && data.error) {
+              errorMessage = data.error;
+            }
+          }
+
           createLog({
             userId,
             operation,
@@ -211,7 +203,6 @@ function logAudit(operation, options = {}) {
         } catch (e) {
           console.error('写入审计日志失败:', e);
         }
-        req._auditLogged = true;
       }
 
       return originalSend(data);
@@ -507,6 +498,10 @@ app.get('/api/reviews/:id', (req, res) => {
 app.put(
   '/api/reviews/:id/status',
   logAudit(OPERATION_TYPES.REVIEW_STATUS, {
+    getDocumentId: (req) => {
+      const review = getReviewById(parseInt(req.params.id));
+      return review ? review.document_id : null;
+    },
     getParams: (req) => ({ status: req.body?.status })
   }),
   (req, res) => {
@@ -551,6 +546,10 @@ app.get('/api/reviews/:id/comments', (req, res) => {
 app.post(
   '/api/reviews/:id/comments',
   logAudit(OPERATION_TYPES.COMMENT_ADD, {
+    getDocumentId: (req) => {
+      const review = getReviewById(parseInt(req.params.id));
+      return review ? review.document_id : null;
+    },
     getParams: (req) => ({ review_id: req.params.id, has_parent: !!req.body?.parent_id })
   }),
   (req, res) => {
@@ -585,6 +584,12 @@ app.post(
 app.put(
   '/api/comments/:id/resolve',
   logAudit(OPERATION_TYPES.COMMENT_RESOLVE, {
+    getDocumentId: (req) => {
+      const comment = getCommentById(parseInt(req.params.id));
+      if (!comment) return null;
+      const review = getReviewById(comment.review_id);
+      return review ? review.document_id : null;
+    },
     getParams: (req) => ({ comment_id: req.params.id, action: 'resolve' })
   }),
   (req, res) => {
