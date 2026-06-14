@@ -20,6 +20,11 @@ let data = {
   nextMappingId: 1
 };
 
+const CLAIM_CONFIG = {
+  DEFAULT_DURATION_MS: 30 * 60 * 1000,
+  AUTO_RECOVERY_INTERVAL_MS: 60 * 1000
+};
+
 const LANGUAGES = {
   'zh-CN': { name: '简体中文', flag: '🇨🇳' },
   'en-US': { name: 'English', flag: '🇺🇸' },
@@ -376,7 +381,7 @@ function detectChangesOnMasterUpdate(documentId, oldMasterVersion, newMasterVers
   saveData();
 }
 
-function submitParagraphTranslation({ mirrorId, mappingId, translatedContent, translator }) {
+function submitParagraphTranslation({ mirrorId, mappingId, translatedContent, translator, userId = null }) {
   loadData();
 
   const mirror = data.mirrors.find(m => m.id === mirrorId);
@@ -393,10 +398,31 @@ function submitParagraphTranslation({ mirrorId, mappingId, translatedContent, tr
     return { error: '该段落当前不需要翻译', status: 400 };
   }
 
+  checkAndRecoverExpiredClaimsForMirror(mirrorId);
+
+  if (mapping.claimed_by && userId && mapping.claimed_by !== userId) {
+    return {
+      error: '该段落已被其他人认领，请先认领再提交',
+      status: 409,
+      claim: getClaimStatus(mapping)
+    };
+  }
+
+  if (!mapping.claimed_by && userId) {
+    return {
+      error: '请先认领该段落再提交译文',
+      status: 400
+    };
+  }
+
   mapping.translated_content = translatedContent;
   mapping.status = 'synchronized';
   mapping.translator = translator || 'anonymous';
   mapping.translated_at = now();
+  mapping.claimed_by = null;
+  mapping.claimed_by_name = null;
+  mapping.claimed_at = null;
+  mapping.claim_expires_at = null;
   mapping.updated_at = now();
 
   mirror.updated_at = now();
@@ -405,7 +431,7 @@ function submitParagraphTranslation({ mirrorId, mappingId, translatedContent, tr
   return { mapping, mirror: enrichMirror(mirror) };
 }
 
-function confirmDeletedParagraph({ mirrorId, mappingId, confirm, translator }) {
+function confirmDeletedParagraph({ mirrorId, mappingId, confirm, translator, userId = null }) {
   loadData();
 
   const mirror = data.mirrors.find(m => m.id === mirrorId);
@@ -422,6 +448,23 @@ function confirmDeletedParagraph({ mirrorId, mappingId, confirm, translator }) {
     return { error: '该段落当前不处于删除确认状态', status: 400 };
   }
 
+  checkAndRecoverExpiredClaimsForMirror(mirrorId);
+
+  if (mapping.claimed_by && userId && mapping.claimed_by !== userId) {
+    return {
+      error: '该段落已被其他人认领',
+      status: 409,
+      claim: getClaimStatus(mapping)
+    };
+  }
+
+  if (!mapping.claimed_by && userId) {
+    return {
+      error: '请先认领该段落再处理',
+      status: 400
+    };
+  }
+
   if (confirm) {
     mapping.status = 'deleted';
     mapping.translator = translator || 'anonymous';
@@ -429,6 +472,10 @@ function confirmDeletedParagraph({ mirrorId, mappingId, confirm, translator }) {
   } else {
     mapping.status = 'new';
   }
+  mapping.claimed_by = null;
+  mapping.claimed_by_name = null;
+  mapping.claimed_at = null;
+  mapping.claim_expires_at = null;
   mapping.updated_at = now();
   mirror.updated_at = now();
 
@@ -515,6 +562,7 @@ function getMirrorVersion(mirrorId, versionNumber) {
 
 function getTranslationWorkbench(mirrorId) {
   loadData();
+  checkAndRecoverExpiredClaimsForMirror(mirrorId);
 
   const mirror = data.mirrors.find(m => m.id === mirrorId);
   if (!mirror) {
@@ -542,7 +590,8 @@ function getTranslationWorkbench(mirrorId) {
         master_content: line,
         translated_content: '',
         status: 'missing',
-        mapping_id: null
+        mapping_id: null,
+        claim: { is_claimed: false }
       };
     }
     return {
@@ -555,7 +604,8 @@ function getTranslationWorkbench(mirrorId) {
       mapping_id: mapping.id,
       translator: mapping.translator,
       translated_at: mapping.translated_at,
-      master_version: mapping.master_version
+      master_version: mapping.master_version,
+      claim: getClaimStatus(mapping)
     };
   });
 
@@ -569,6 +619,8 @@ function getTranslationWorkbench(mirrorId) {
   };
   stats.pending = stats.outdated + stats.new + stats.deleted_need_confirm;
 
+  const claimStats = getMirrorClaimStats(mirrorId);
+
   const enrichedMirror = enrichMirror(mirror);
 
   return {
@@ -580,7 +632,8 @@ function getTranslationWorkbench(mirrorId) {
       latest_version_at: latestMasterVersion.created_at
     },
     paragraphs,
-    stats
+    stats,
+    claim_stats: claimStats
   };
 }
 
@@ -596,6 +649,329 @@ function deleteMirror(mirrorId) {
 
   saveData();
   return true;
+}
+
+function getClaimStatus(mapping) {
+  if (!mapping.claimed_by) {
+    return { is_claimed: false };
+  }
+  const nowTs = now();
+  const is_expired = mapping.claim_expires_at && mapping.claim_expires_at < nowTs;
+  const remaining_ms = mapping.claim_expires_at ? Math.max(0, mapping.claim_expires_at - nowTs) : 0;
+  return {
+    is_claimed: true,
+    claimed_by: mapping.claimed_by,
+    claimed_by_name: mapping.claimed_by_name || mapping.claimed_by,
+    claimed_at: mapping.claimed_at,
+    claim_expires_at: mapping.claim_expires_at,
+    is_expired,
+    remaining_ms
+  };
+}
+
+function claimParagraph({ mirrorId, mappingId, userId, userName, durationMs = null }) {
+  loadData();
+
+  const mirror = data.mirrors.find(m => m.id === mirrorId);
+  if (!mirror) {
+    return { error: '镜像不存在', status: 404 };
+  }
+
+  const mapping = data.paragraphMappings.find(pm => pm.id === mappingId && pm.mirror_id === mirrorId);
+  if (!mapping) {
+    return { error: '段落映射不存在', status: 404 };
+  }
+
+  if (mapping.status === 'deleted' || mapping.status === 'synchronized') {
+    return { error: '该段落当前不需要翻译', status: 400 };
+  }
+
+  checkAndRecoverExpiredClaimsForMirror(mirrorId);
+
+  if (mapping.claimed_by && mapping.claimed_by !== userId) {
+    return {
+      error: '该段落已被其他人认领',
+      status: 409,
+      claim: getClaimStatus(mapping)
+    };
+  }
+
+  const duration = durationMs || CLAIM_CONFIG.DEFAULT_DURATION_MS;
+  mapping.claimed_by = userId;
+  mapping.claimed_by_name = userName || userId;
+  mapping.claimed_at = now();
+  mapping.claim_expires_at = now() + duration;
+  mapping.updated_at = now();
+
+  mirror.updated_at = now();
+  saveData();
+
+  return {
+    mapping: { ...mapping, claim: getClaimStatus(mapping) },
+    mirror: enrichMirror(mirror)
+  };
+}
+
+function releaseParagraphClaim({ mirrorId, mappingId, userId }) {
+  loadData();
+
+  const mirror = data.mirrors.find(m => m.id === mirrorId);
+  if (!mirror) {
+    return { error: '镜像不存在', status: 404 };
+  }
+
+  const mapping = data.paragraphMappings.find(pm => pm.id === mappingId && pm.mirror_id === mirrorId);
+  if (!mapping) {
+    return { error: '段落映射不存在', status: 404 };
+  }
+
+  if (!mapping.claimed_by) {
+    return { error: '该段落未被认领', status: 400 };
+  }
+
+  if (mapping.claimed_by !== userId) {
+    return { error: '只能释放自己认领的段落', status: 403 };
+  }
+
+  mapping.claimed_by = null;
+  mapping.claimed_by_name = null;
+  mapping.claimed_at = null;
+  mapping.claim_expires_at = null;
+  mapping.updated_at = now();
+
+  mirror.updated_at = now();
+  saveData();
+
+  return {
+    mapping: { ...mapping, claim: getClaimStatus(mapping) },
+    mirror: enrichMirror(mirror)
+  };
+}
+
+function forceAssignParagraph({ mirrorId, mappingId, userId, userName, durationMs = null }) {
+  loadData();
+
+  const mirror = data.mirrors.find(m => m.id === mirrorId);
+  if (!mirror) {
+    return { error: '镜像不存在', status: 404 };
+  }
+
+  const mapping = data.paragraphMappings.find(pm => pm.id === mappingId && pm.mirror_id === mirrorId);
+  if (!mapping) {
+    return { error: '段落映射不存在', status: 404 };
+  }
+
+  if (mapping.status === 'deleted' || mapping.status === 'synchronized') {
+    return { error: '该段落当前不需要翻译', status: 400 };
+  }
+
+  const duration = durationMs || CLAIM_CONFIG.DEFAULT_DURATION_MS;
+  const previousClaimant = mapping.claimed_by;
+  mapping.claimed_by = userId;
+  mapping.claimed_by_name = userName || userId;
+  mapping.claimed_at = now();
+  mapping.claim_expires_at = now() + duration;
+  mapping.updated_at = now();
+
+  mirror.updated_at = now();
+  saveData();
+
+  return {
+    mapping: { ...mapping, claim: getClaimStatus(mapping) },
+    mirror: enrichMirror(mirror),
+    previous_claimant: previousClaimant
+  };
+}
+
+function batchAssignParagraphs({ mirrorId, mappingIds, userId, userName, durationMs = null }) {
+  loadData();
+
+  const mirror = data.mirrors.find(m => m.id === mirrorId);
+  if (!mirror) {
+    return { error: '镜像不存在', status: 404 };
+  }
+
+  const results = [];
+  const failed = [];
+
+  mappingIds.forEach(mappingId => {
+    const mapping = data.paragraphMappings.find(pm => pm.id === mappingId && pm.mirror_id === mirrorId);
+    if (!mapping) {
+      failed.push({ mappingId, error: '段落不存在' });
+      return;
+    }
+    if (mapping.status === 'deleted' || mapping.status === 'synchronized') {
+      failed.push({ mappingId, error: '该段落不需要翻译' });
+      return;
+    }
+    const duration = durationMs || CLAIM_CONFIG.DEFAULT_DURATION_MS;
+    mapping.claimed_by = userId;
+    mapping.claimed_by_name = userName || userId;
+    mapping.claimed_at = now();
+    mapping.claim_expires_at = now() + duration;
+    mapping.updated_at = now();
+    results.push(mappingId);
+  });
+
+  mirror.updated_at = now();
+  saveData();
+
+  return {
+    assigned_count: results.length,
+    assigned_ids: results,
+    failed,
+    mirror: enrichMirror(mirror)
+  };
+}
+
+function checkAndRecoverExpiredClaimsForMirror(mirrorId) {
+  let recovered = 0;
+  const nowTs = now();
+  data.paragraphMappings.forEach(pm => {
+    if (pm.mirror_id === mirrorId && pm.claimed_by && pm.claim_expires_at && pm.claim_expires_at < nowTs) {
+      pm.claimed_by = null;
+      pm.claimed_by_name = null;
+      pm.claimed_at = null;
+      pm.claim_expires_at = null;
+      pm.updated_at = nowTs;
+      recovered++;
+    }
+  });
+  if (recovered > 0) {
+    saveData();
+  }
+  return recovered;
+}
+
+function checkAndRecoverAllExpiredClaims() {
+  let totalRecovered = 0;
+  const nowTs = now();
+  const affectedMirrorIds = new Set();
+
+  data.paragraphMappings.forEach(pm => {
+    if (pm.claimed_by && pm.claim_expires_at && pm.claim_expires_at < nowTs) {
+      pm.claimed_by = null;
+      pm.claimed_by_name = null;
+      pm.claimed_at = null;
+      pm.claim_expires_at = null;
+      pm.updated_at = nowTs;
+      affectedMirrorIds.add(pm.mirror_id);
+      totalRecovered++;
+    }
+  });
+
+  if (totalRecovered > 0) {
+    affectedMirrorIds.forEach(mirrorId => {
+      const mirror = data.mirrors.find(m => m.id === mirrorId);
+      if (mirror) {
+        mirror.updated_at = nowTs;
+      }
+    });
+    saveData();
+  }
+
+  return {
+    recovered_count: totalRecovered,
+    affected_mirror_ids: [...affectedMirrorIds]
+  };
+}
+
+function getMirrorClaimStats(mirrorId) {
+  loadData();
+  checkAndRecoverExpiredClaimsForMirror(mirrorId);
+
+  const mappings = data.paragraphMappings.filter(pm => pm.mirror_id === mirrorId);
+  const pendingMappings = mappings.filter(
+    pm => pm.status === 'outdated' || pm.status === 'new' || pm.status === 'deleted_need_confirm'
+  );
+
+  const unclaimed = pendingMappings.filter(pm => !pm.claimed_by);
+  const claimedByMe = {};
+  const claimedByOthers = {};
+
+  pendingMappings.forEach(pm => {
+    if (pm.claimed_by) {
+      const isExpired = pm.claim_expires_at && pm.claim_expires_at < now();
+      const key = pm.claimed_by;
+      if (!claimedByOthers[key]) {
+        claimedByOthers[key] = {
+          user_id: key,
+          user_name: pm.claimed_by_name || key,
+          count: 0,
+          expired_count: 0,
+          total_remaining_ms: 0
+        };
+      }
+      claimedByOthers[key].count++;
+      if (isExpired) {
+        claimedByOthers[key].expired_count++;
+      } else if (pm.claim_expires_at) {
+        claimedByOthers[key].total_remaining_ms += (pm.claim_expires_at - now());
+      }
+    }
+  });
+
+  return {
+    total_pending: pendingMappings.length,
+    unclaimed_count: unclaimed.length,
+    claimed_count: pendingMappings.length - unclaimed.length,
+    by_user: Object.values(claimedByOthers).map(u => ({
+      ...u,
+      avg_remaining_ms: u.count > 0 ? Math.floor(u.total_remaining_ms / u.count) : 0
+    }))
+  };
+}
+
+function getDocumentClaimStats(documentId) {
+  loadData();
+  const mirrors = data.mirrors.filter(m => m.document_id === documentId);
+  const result = {};
+
+  mirrors.forEach(mirror => {
+    result[mirror.language_code] = {
+      mirror_id: mirror.id,
+      language_code: mirror.language_code,
+      language_name: LANGUAGES[mirror.language_code]?.name || mirror.language_code,
+      language_flag: LANGUAGES[mirror.language_code]?.flag || '🌐',
+      ...getMirrorClaimStats(mirror.id)
+    };
+  });
+
+  return result;
+}
+
+function extendClaim({ mirrorId, mappingId, userId, extendMs = null }) {
+  loadData();
+
+  const mirror = data.mirrors.find(m => m.id === mirrorId);
+  if (!mirror) {
+    return { error: '镜像不存在', status: 404 };
+  }
+
+  const mapping = data.paragraphMappings.find(pm => pm.id === mappingId && pm.mirror_id === mirrorId);
+  if (!mapping) {
+    return { error: '段落映射不存在', status: 404 };
+  }
+
+  if (!mapping.claimed_by) {
+    return { error: '该段落未被认领', status: 400 };
+  }
+
+  if (mapping.claimed_by !== userId) {
+    return { error: '只能续期自己认领的段落', status: 403 };
+  }
+
+  const extendDuration = extendMs || CLAIM_CONFIG.DEFAULT_DURATION_MS;
+  mapping.claim_expires_at = now() + extendDuration;
+  mapping.updated_at = now();
+
+  mirror.updated_at = now();
+  saveData();
+
+  return {
+    mapping: { ...mapping, claim: getClaimStatus(mapping) },
+    mirror: enrichMirror(mirror)
+  };
 }
 
 loadData();
@@ -618,5 +994,16 @@ module.exports = {
   deleteMirror,
   loadData,
   saveData,
-  assembleMirrorContent
+  assembleMirrorContent,
+  claimParagraph,
+  releaseParagraphClaim,
+  forceAssignParagraph,
+  batchAssignParagraphs,
+  checkAndRecoverExpiredClaimsForMirror,
+  checkAndRecoverAllExpiredClaims,
+  getMirrorClaimStats,
+  getDocumentClaimStats,
+  extendClaim,
+  getClaimStatus,
+  CLAIM_CONFIG
 };

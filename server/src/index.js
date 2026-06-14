@@ -90,7 +90,15 @@ const {
   getMirrorVersion,
   getTranslationWorkbench,
   deleteMirror,
-  detectChangesOnMasterUpdate
+  detectChangesOnMasterUpdate,
+  claimParagraph,
+  releaseParagraphClaim,
+  forceAssignParagraph,
+  batchAssignParagraphs,
+  getMirrorClaimStats,
+  getDocumentClaimStats,
+  extendClaim,
+  checkAndRecoverAllExpiredClaims
 } = require('./mirrorService');
 
 const {
@@ -1290,7 +1298,8 @@ app.put(
         mirrorId,
         mappingId,
         translatedContent: translated_content,
-        translator: req.currentUser.name
+        translator: req.currentUser.name,
+        userId: req.currentUser.id
       });
 
       if (result.error) {
@@ -1344,7 +1353,8 @@ app.put(
         mirrorId,
         mappingId,
         confirm: confirm === true,
-        translator: req.currentUser.name
+        translator: req.currentUser.name,
+        userId: req.currentUser.id
       });
 
       if (result.error) {
@@ -1486,6 +1496,294 @@ app.delete('/api/mirrors/:mirrorId', (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ============ 翻译认领 API ============
+
+app.post(
+  '/api/mirrors/:mirrorId/paragraphs/:mappingId/claim',
+  logAudit(OPERATION_TYPES.PARAGRAPH_TRANSLATE, {
+    getDocumentId: (req) => {
+      const mirror = getMirrorById(parseInt(req.params.mirrorId));
+      return mirror ? mirror.document_id : null;
+    },
+    getParams: (req) => ({
+      mirror_id: parseInt(req.params.mirrorId),
+      mapping_id: parseInt(req.params.mappingId),
+      action: 'claim'
+    })
+  }),
+  (req, res) => {
+    try {
+      const mirrorId = parseInt(req.params.mirrorId);
+      const mappingId = parseInt(req.params.mappingId);
+      const { duration_ms } = req.body;
+
+      const mirror = getMirrorById(mirrorId);
+      if (!mirror) {
+        return res.status(404).json({ error: '镜像不存在' });
+      }
+      const doc = getDocumentById(mirror.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(mirror.document_id, userId, ROLES.EDITOR, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+
+      if (!req.currentUser.id) {
+        return res.status(400).json({ error: '需要登录才能认领' });
+      }
+
+      const result = claimParagraph({
+        mirrorId,
+        mappingId,
+        userId: req.currentUser.id,
+        userName: req.currentUser.name,
+        durationMs: duration_ms ? parseInt(duration_ms) : null
+      });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error, claim: result.claim });
+      }
+
+      wsService.notifyMirrorParagraphUpdate(mirrorId, mappingId, 'paragraph_claimed');
+      wsService.notifyDocumentMirrorsUpdate(mirror.document_id);
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/mirrors/:mirrorId/paragraphs/:mappingId/release',
+  logAudit(OPERATION_TYPES.PARAGRAPH_TRANSLATE, {
+    getDocumentId: (req) => {
+      const mirror = getMirrorById(parseInt(req.params.mirrorId));
+      return mirror ? mirror.document_id : null;
+    },
+    getParams: (req) => ({
+      mirror_id: parseInt(req.params.mirrorId),
+      mapping_id: parseInt(req.params.mappingId),
+      action: 'release_claim'
+    })
+  }),
+  (req, res) => {
+    try {
+      const mirrorId = parseInt(req.params.mirrorId);
+      const mappingId = parseInt(req.params.mappingId);
+
+      const mirror = getMirrorById(mirrorId);
+      if (!mirror) {
+        return res.status(404).json({ error: '镜像不存在' });
+      }
+      const doc = getDocumentById(mirror.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(mirror.document_id, userId, ROLES.EDITOR, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+
+      if (!req.currentUser.id) {
+        return res.status(400).json({ error: '需要登录' });
+      }
+
+      const result = releaseParagraphClaim({
+        mirrorId,
+        mappingId,
+        userId: req.currentUser.id
+      });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      wsService.notifyMirrorParagraphUpdate(mirrorId, mappingId, 'paragraph_claim_released');
+      wsService.notifyDocumentMirrorsUpdate(mirror.document_id);
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/mirrors/:mirrorId/paragraphs/:mappingId/assign',
+  logAudit(OPERATION_TYPES.PARAGRAPH_TRANSLATE, {
+    getDocumentId: (req) => {
+      const mirror = getMirrorById(parseInt(req.params.mirrorId));
+      return mirror ? mirror.document_id : null;
+    },
+    getParams: (req) => ({
+      mirror_id: parseInt(req.params.mirrorId),
+      mapping_id: parseInt(req.params.mappingId),
+      action: 'force_assign',
+      target_user: req.body?.user_id
+    })
+  }),
+  requireDocPermission(ROLES.OWNER),
+  (req, res) => {
+    try {
+      const mirrorId = parseInt(req.params.mirrorId);
+      const mappingId = parseInt(req.params.mappingId);
+      const { user_id, user_name, duration_ms } = req.body;
+
+      if (!user_id) {
+        return res.status(400).json({ error: '缺少目标用户ID' });
+      }
+
+      const result = forceAssignParagraph({
+        mirrorId,
+        mappingId,
+        userId: user_id,
+        userName: user_name || user_id,
+        durationMs: duration_ms ? parseInt(duration_ms) : null
+      });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      wsService.notifyMirrorParagraphUpdate(mirrorId, mappingId, 'paragraph_reassigned');
+      wsService.notifyDocumentMirrorsUpdate(req._document.id);
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/mirrors/:mirrorId/batch-assign',
+  logAudit(OPERATION_TYPES.MIRROR_CREATE, {
+    getDocumentId: (req) => {
+      const mirror = getMirrorById(parseInt(req.params.mirrorId));
+      return mirror ? mirror.document_id : null;
+    },
+    getParams: (req) => ({
+      mirror_id: parseInt(req.params.mirrorId),
+      action: 'batch_assign',
+      target_user: req.body?.user_id,
+      mapping_ids: req.body?.mapping_ids
+    })
+  }),
+  requireDocPermission(ROLES.OWNER),
+  (req, res) => {
+    try {
+      const mirrorId = parseInt(req.params.mirrorId);
+      const { user_id, user_name, mapping_ids, duration_ms } = req.body;
+
+      if (!user_id || !mapping_ids || !Array.isArray(mapping_ids)) {
+        return res.status(400).json({ error: '缺少必要参数' });
+      }
+
+      const result = batchAssignParagraphs({
+        mirrorId,
+        mappingIds: mapping_ids.map(id => parseInt(id)),
+        userId: user_id,
+        userName: user_name || user_id,
+        durationMs: duration_ms ? parseInt(duration_ms) : null
+      });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      wsService.notifyMirrorUpdate(mirrorId, 'mirror_claims_updated');
+      wsService.notifyDocumentMirrorsUpdate(req._document.id);
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/mirrors/:mirrorId/paragraphs/:mappingId/extend-claim',
+  (req, res) => {
+    try {
+      const mirrorId = parseInt(req.params.mirrorId);
+      const mappingId = parseInt(req.params.mappingId);
+      const { extend_ms } = req.body;
+
+      const mirror = getMirrorById(mirrorId);
+      if (!mirror) {
+        return res.status(404).json({ error: '镜像不存在' });
+      }
+      const doc = getDocumentById(mirror.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(mirror.document_id, userId, ROLES.EDITOR, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+
+      if (!req.currentUser.id) {
+        return res.status(400).json({ error: '需要登录' });
+      }
+
+      const result = extendClaim({
+        mirrorId,
+        mappingId,
+        userId: req.currentUser.id,
+        extendMs: extend_ms ? parseInt(extend_ms) : null
+      });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      wsService.notifyMirrorParagraphUpdate(mirrorId, mappingId, 'paragraph_claim_extended');
+      wsService.notifyDocumentMirrorsUpdate(mirror.document_id);
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get('/api/mirrors/:mirrorId/claim-stats', (req, res) => {
+  try {
+    const mirrorId = parseInt(req.params.mirrorId);
+    const mirror = getMirrorById(mirrorId);
+    if (!mirror) {
+      return res.status(404).json({ error: '镜像不存在' });
+    }
+    const doc = getDocumentById(mirror.document_id, { reload: false });
+    if (doc) {
+      const userId = req.currentUser.id;
+      const permissionResult = checkPermission(mirror.document_id, userId, ROLES.VIEWER, doc.is_public);
+      if (!permissionResult.allowed) {
+        return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+      }
+    }
+    res.json(getMirrorClaimStats(mirrorId));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get(
+  '/api/documents/:id/claim-stats',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      res.json(getDocumentClaimStats(docId));
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
 
 // ============ 权限管理 API ============
 
@@ -1723,6 +2021,10 @@ app.get('/translate/:mirrorId', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'translation-workbench.html'));
 });
 
+app.get('/workload/:documentId', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'translation-workload.html'));
+});
+
 seedDemoData();
 
 setInterval(() => {
@@ -1749,6 +2051,24 @@ setInterval(() => {
     }
   } catch (e) {
     console.error('通知检查出错:', e);
+  }
+}, 60 * 1000);
+
+setInterval(() => {
+  try {
+    const result = checkAndRecoverAllExpiredClaims();
+    if (result.recovered_count > 0) {
+      console.log(`[认领回收] 自动回收 ${result.recovered_count} 个过期认领任务`);
+      result.affected_mirror_ids.forEach(mirrorId => {
+        wsService.notifyMirrorUpdate(mirrorId, 'mirror_claims_recovered');
+        const mirror = getMirrorById(mirrorId);
+        if (mirror) {
+          wsService.notifyDocumentMirrorsUpdate(mirror.document_id);
+        }
+      });
+    }
+  } catch (e) {
+    console.error('认领回收检查出错:', e);
   }
 }, 60 * 1000);
 

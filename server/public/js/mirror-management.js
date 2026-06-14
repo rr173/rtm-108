@@ -4,11 +4,32 @@ class MirrorManagement {
     this.document = null;
     this.mirrors = [];
     this.languages = [];
+    this.claimStats = {};
     this.ws = null;
+    this.currentUserId = localStorage.getItem('currentUserId') || 'user-admin';
+    if (!localStorage.getItem('currentUserId')) {
+      localStorage.setItem('currentUserId', 'user-admin');
+    }
+    this.currentUserName = '';
+    this.currentUserRole = null;
+    this.canManage = false;
+    this.selectedMirrorId = null;
+    this.selectedParagraphIds = [];
     this.init();
   }
 
-  init() {
+  apiFetch(url, options = {}) {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    };
+    if (this.currentUserId) {
+      headers['X-User-Id'] = this.currentUserId;
+    }
+    return fetch(url, { ...options, headers });
+  }
+
+  async init() {
     const path = window.location.pathname;
     const pathMatch = path.match(/\/mirrors\/(\d+)/);
     const urlParams = new URLSearchParams(window.location.search);
@@ -22,8 +43,24 @@ class MirrorManagement {
       this.showError('找不到文档ID');
       return;
     }
+    await this.loadCurrentUser();
     this.initWebSocket();
     this.loadData();
+  }
+
+  async loadCurrentUser() {
+    try {
+      const res = await this.apiFetch('/api/current-user');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.user_id) {
+          this.currentUserId = data.user_id;
+        }
+        this.currentUserName = data.user_name || this.currentUserId || '匿名用户';
+      }
+    } catch (e) {
+      console.warn('获取当前用户信息失败:', e);
+    }
   }
 
   initWebSocket() {
@@ -51,6 +88,7 @@ class MirrorManagement {
     if (data.type === 'document_mirrors_status' || data.type === 'document_mirrors_updated') {
       if (data.mirrors) {
         this.mirrors = data.mirrors;
+        this.loadClaimStats();
         this.render();
       }
     }
@@ -59,9 +97,9 @@ class MirrorManagement {
   async loadData() {
     try {
       const [docRes, mirrorsRes, langRes] = await Promise.all([
-        fetch(`/api/documents/${this.documentId}`),
-        fetch(`/api/documents/${this.documentId}/mirrors`),
-        fetch('/api/languages')
+        this.apiFetch(`/api/documents/${this.documentId}`),
+        this.apiFetch(`/api/documents/${this.documentId}/mirrors`),
+        this.apiFetch('/api/languages')
       ]);
 
       if (!docRes.ok) throw new Error('加载文档失败');
@@ -71,9 +109,23 @@ class MirrorManagement {
       this.document = await docRes.json();
       this.mirrors = await mirrorsRes.json();
       this.languages = await langRes.json();
+      this.currentUserRole = this.document.current_user_role;
+      this.canManage = this.document.current_user_role === 'owner';
+      this.loadClaimStats();
       this.render();
     } catch (e) {
       this.showError(e.message);
+    }
+  }
+
+  async loadClaimStats() {
+    try {
+      const res = await this.apiFetch(`/api/documents/${this.documentId}/claim-stats`);
+      if (res.ok) {
+        this.claimStats = await res.json();
+      }
+    } catch (e) {
+      console.warn('加载认领统计失败:', e);
     }
   }
 
@@ -101,11 +153,17 @@ class MirrorManagement {
           <div style="margin-top:8px;font-size:14px;color:rgba(255,255,255,0.85);">
             当前主文档版本: <strong>v${doc.versions?.length || doc.latestVersion || 0}</strong>
             ${doc.description ? ` · ${this.escapeHtml(doc.description)}` : ''}
+            ${this.currentUserName ? ` · 当前用户: ${this.escapeHtml(this.currentUserName)}` : ''}
           </div>
         </div>
-        <button class="btn btn-primary" id="createMirrorBtn" style="background:white;color:#667eea;border-color:white;">
-          ➕ 新建语言镜像
-        </button>
+        <div style="display:flex;gap:8px;">
+          <button class="btn" onclick="location.href='/workload/${this.documentId}'">
+            📊 翻译负载视图
+          </button>
+          <button class="btn btn-primary" id="createMirrorBtn" style="background:white;color:#667eea;border-color:white;">
+            ➕ 新建语言镜像
+          </button>
+        </div>
       </div>
     `;
 
@@ -139,8 +197,14 @@ class MirrorManagement {
       const syncBadgeText = mirror.sync_status === 'synced' ? '✅ 已同步' :
                             mirror.sync_status === 'outdated' ? '⚠️ 主文档已更新' : '⏳ 待同步';
 
+      const stats = this.claimStats[mirror.language_code];
+      const claimedCount = stats?.claimed_count || 0;
+      const unclaimedCount = stats?.unclaimed_count || 0;
+      const byUser = stats?.by_user || [];
+
       html += `
-        <div class="mirror-card">
+        <div class="mirror-card ${this.selectedMirrorId === mirror.id ? 'selected' : ''}"
+             data-mirror-id="${mirror.id}">
           <div class="mirror-card-header">
             <div class="mirror-language">
               <span class="flag">${mirror.language_flag}</span>
@@ -163,9 +227,13 @@ class MirrorManagement {
               <div class="value">${mirror.pending_paragraph_count}</div>
               <div class="label">待处理</div>
             </div>
-            <div class="mirror-stat outdated">
-              <div class="value">${mirror.latest_master_version - mirror.synced_master_version}</div>
-              <div class="label">落后版本</div>
+            <div class="mirror-stat claimed">
+              <div class="value">${claimedCount}</div>
+              <div class="label">已认领</div>
+            </div>
+            <div class="mirror-stat unclaimed">
+              <div class="value">${unclaimedCount}</div>
+              <div class="label">待认领</div>
             </div>
           </div>
 
@@ -176,6 +244,19 @@ class MirrorManagement {
             <span>同步进度</span>
             <span>${progress}% (${mirror.synchronized_paragraph_count}/${mirror.total_paragraph_count})</span>
           </div>
+
+          ${byUser.length > 0 ? `
+            <div class="claim-user-list">
+              <div class="claim-user-title">👥 认领情况</div>
+              ${byUser.map(u => `
+                <div class="claim-user-item">
+                  <span class="claim-user-name">${this.escapeHtml(u.user_name)}</span>
+                  <span class="claim-user-count">${u.count} 段</span>
+                  ${u.expired_count > 0 ? `<span class="claim-user-expired">⏰ ${u.expired_count} 超时</span>` : ''}
+                </div>
+              `).join('')}
+            </div>
+          ` : ''}
 
           <div class="version-info">
             <div class="row">
@@ -206,12 +287,19 @@ class MirrorManagement {
             <button class="btn btn-primary btn-sm" onclick="location.href='/translate/${mirror.id}'">
               🖊️ 翻译工作台
             </button>
+            ${this.canManage ? `
+              <button class="btn btn-sm" onclick="window.management.showBatchAssignModal(${mirror.id})">
+                📋 批量分配
+              </button>
+            ` : ''}
             <button class="btn btn-sm" onclick="window.management.showVersionHistory(${mirror.id})">
               📜 版本历史
             </button>
-            <button class="btn btn-danger btn-sm" onclick="window.management.deleteMirror(${mirror.id})">
-              🗑️
-            </button>
+            ${this.canManage ? `
+              <button class="btn btn-danger btn-sm" onclick="window.management.deleteMirror(${mirror.id})">
+                🗑️
+              </button>
+            ` : ''}
           </div>
         </div>
       `;
@@ -291,9 +379,8 @@ class MirrorManagement {
     const initialContent = document.getElementById('initialContent').value || null;
 
     try {
-      const res = await fetch(`/api/documents/${this.documentId}/mirrors`, {
+      const res = await this.apiFetch(`/api/documents/${this.documentId}/mirrors`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           language_code: languageCode,
           initial_content: initialContent
@@ -310,9 +397,136 @@ class MirrorManagement {
     }
   }
 
+  async showBatchAssignModal(mirrorId) {
+    try {
+      const res = await this.apiFetch(`/api/mirrors/${mirrorId}/workbench`);
+      if (!res.ok) throw new Error('加载镜像数据失败');
+      const workbench = await res.json();
+
+      const pendingParagraphs = workbench.paragraphs.filter(
+        p => p.status === 'outdated' || p.status === 'new' || p.status === 'missing' || p.status === 'deleted_need_confirm'
+      );
+
+      const mirror = this.mirrors.find(m => m.id === mirrorId);
+
+      let paragraphsHtml = '';
+      pendingParagraphs.forEach(p => {
+        const isClaimed = p.claim?.is_claimed;
+        const claimant = p.claim?.claimed_by_name || p.claim?.claimed_by || '';
+        const isExpired = p.claim?.is_expired;
+
+        paragraphsHtml += `
+          <label class="paragraph-assign-item">
+            <input type="checkbox" class="paragraph-checkbox" value="${p.mapping_id}" 
+                   ${!isClaimed || isExpired ? '' : 'disabled'}>
+            <div class="paragraph-assign-content">
+              <div class="paragraph-assign-header">
+                <span class="line-num">L${p.master_line_index + 1}</span>
+                <span class="status-tag ${p.status}">${this.getStatusText(p.status)}</span>
+                ${isClaimed ? `
+                  <span class="claim-tag ${isExpired ? 'expired' : ''}">
+                    ${isExpired ? '⏰ 已超时' : `👤 ${claimant} 认领中`}
+                  </span>
+                ` : '<span class="claim-tag unclaimed">📭 待认领</span>'}
+              </div>
+              <div class="paragraph-assign-text">${this.escapeHtml(p.master_content)}</div>
+            </div>
+          </label>
+        `;
+      });
+
+      if (pendingParagraphs.length === 0) {
+        paragraphsHtml = '<p style="text-align:center;color:#94a3b8;padding:20px;">没有待处理的段落</p>';
+      }
+
+      const modalHtml = `
+        <div class="modal-backdrop" id="batchAssignModal">
+          <div class="modal" style="width:600px;max-height:80vh;">
+            <div class="modal-header">
+              <h3>📋 批量分配 - ${mirror?.language_flag || ''} ${mirror?.language_name || ''}</h3>
+              <button class="modal-close" onclick="document.getElementById('batchAssignModal').remove()">×</button>
+            </div>
+            <div class="modal-body" style="max-height:50vh;overflow-y:auto;">
+              <div class="form-group">
+                <label>分配给</label>
+                <input type="text" id="assignUserId" placeholder="输入用户ID" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:6px;">
+                <small style="color:#64748b;">输入要分配给的翻译人员用户ID</small>
+              </div>
+              <div class="form-group">
+                <label>选择要分配的段落 (${pendingParagraphs.length} 个待处理)</label>
+                <div style="display:flex;gap:8px;margin-bottom:8px;">
+                  <button class="btn btn-sm" onclick="window.management.selectAllParagraphs()">全选可分配</button>
+                  <button class="btn btn-sm" onclick="window.management.clearParagraphSelection()">清空</button>
+                </div>
+                <div class="paragraph-assign-list">
+                  ${paragraphsHtml}
+                </div>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button class="btn" onclick="document.getElementById('batchAssignModal').remove()">取消</button>
+              <button class="btn btn-primary" onclick="window.management.confirmBatchAssign(${mirrorId})">确认分配</button>
+            </div>
+          </div>
+        </div>
+      `;
+
+      document.body.insertAdjacentHTML('beforeend', modalHtml);
+    } catch (e) {
+      this.showToast('❌ ' + e.message, 'error');
+    }
+  }
+
+  selectAllParagraphs() {
+    document.querySelectorAll('.paragraph-checkbox:not(:disabled)').forEach(cb => {
+      cb.checked = true;
+    });
+  }
+
+  clearParagraphSelection() {
+    document.querySelectorAll('.paragraph-checkbox').forEach(cb => {
+      cb.checked = false;
+    });
+  }
+
+  async confirmBatchAssign(mirrorId) {
+    const userId = document.getElementById('assignUserId').value.trim();
+    if (!userId) {
+      this.showToast('请输入用户ID', 'warning');
+      return;
+    }
+
+    const selectedIds = Array.from(document.querySelectorAll('.paragraph-checkbox:checked'))
+      .map(cb => parseInt(cb.value));
+
+    if (selectedIds.length === 0) {
+      this.showToast('请至少选择一个段落', 'warning');
+      return;
+    }
+
+    try {
+      const res = await this.apiFetch(`/api/mirrors/${mirrorId}/batch-assign`, {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: userId,
+          user_name: userId,
+          mapping_ids: selectedIds
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || '分配失败');
+
+      this.showToast(`✅ 已成功分配 ${data.assigned_count} 个段落`, 'success');
+      document.getElementById('batchAssignModal').remove();
+      this.loadData();
+    } catch (e) {
+      this.showToast('❌ ' + e.message, 'error');
+    }
+  }
+
   async showVersionHistory(mirrorId) {
     try {
-      const res = await fetch(`/api/mirrors/${mirrorId}/versions`);
+      const res = await this.apiFetch(`/api/mirrors/${mirrorId}/versions`);
       const versions = await res.json();
       if (!res.ok) throw new Error('加载版本历史失败');
 
@@ -372,7 +586,7 @@ class MirrorManagement {
     }
 
     try {
-      const res = await fetch(`/api/mirrors/${mirrorId}`, { method: 'DELETE' });
+      const res = await this.apiFetch(`/api/mirrors/${mirrorId}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || '删除失败');
       this.showToast('🗑️ 镜像已删除', 'success');
@@ -380,6 +594,18 @@ class MirrorManagement {
     } catch (e) {
       this.showToast('❌ ' + e.message, 'error');
     }
+  }
+
+  getStatusText(status) {
+    const map = {
+      'synchronized': '已同步',
+      'outdated': '已过期',
+      'new': '新增',
+      'missing': '新增',
+      'deleted_need_confirm': '待确认删除',
+      'deleted': '已删除'
+    };
+    return map[status] || status;
   }
 
   escapeHtml(str) {

@@ -12,7 +12,10 @@ const {
   submitParagraphTranslation,
   submitMirrorVersion,
   getParagraphMappings,
-  detectChangesOnMasterUpdate
+  detectChangesOnMasterUpdate,
+  claimParagraph,
+  forceAssignParagraph,
+  CLAIM_CONFIG
 } = require('./mirrorService');
 
 function seedDemoData() {
@@ -855,7 +858,116 @@ function seedMirrorData(docId) {
     console.log('⚠️ 主ドキュメントに更新はありませんでした');
   }
 
+  console.log('\n【ステップ4】翻译认领演示データを作成...');
+  seedClaimDemoData(docId);
+
   console.log('\n✅ 多语言镜像演示データ初期化完了！');
+}
+
+function seedClaimDemoData(docId) {
+  const mirrors = listMirrorsByDocument(docId);
+  const enMirror = mirrors.find(m => m.language_code === 'en-US');
+
+  if (!enMirror) {
+    console.log('⚠️ 英語镜像が見つからないため、认领デモをスキップします');
+    return;
+  }
+
+  const mappings = getParagraphMappings(enMirror.id);
+  const pendingMappings = mappings.filter(
+    pm => pm.status === 'outdated' || pm.status === 'new' || pm.status === 'deleted_need_confirm'
+  );
+
+  if (pendingMappings.length < 5) {
+    console.log('⚠️ 未処理段落が不足しているため、认领デモをスキップします');
+    return;
+  }
+
+  console.log(`\n📋 英語镜像に ${pendingMappings.length} 個の未処理段落があります`);
+  console.log('   认领デモデータを作成中...');
+
+  const nowTs = Date.now();
+  const demoUsers = [
+    { id: 'translator-alice', name: '翻译员Alice' },
+    { id: 'translator-bob', name: '翻译员Bob' },
+    { id: 'translator-carol', name: '翻译员Carol' }
+  ];
+
+  const aliceClaimed = [];
+  const bobClaimed = [];
+  let expiredClaim = null;
+
+  pendingMappings.forEach((pm, idx) => {
+    if (idx === 0) {
+      expiredClaim = pm;
+    } else if (idx >= 1 && idx <= 3) {
+      aliceClaimed.push(pm);
+    } else if (idx >= 4 && idx <= 5) {
+      bobClaimed.push(pm);
+    }
+  });
+
+  if (expiredClaim) {
+    const result = forceAssignParagraph({
+      mirrorId: enMirror.id,
+      mappingId: expiredClaim.id,
+      userId: demoUsers[2].id,
+      userName: demoUsers[2].name,
+      durationMs: 60 * 1000
+    });
+    if (!result.error) {
+      const fs = require('fs');
+      const path = require('path');
+      const dataFile = path.join(__dirname, '..', 'data', 'mirrors.json');
+      const data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
+      const mapping = data.paragraphMappings.find(pm => pm.id === expiredClaim.id);
+      if (mapping) {
+        mapping.claimed_at = nowTs - 2 * 60 * 60 * 1000;
+        mapping.claim_expires_at = nowTs - 30 * 60 * 1000;
+        mapping.updated_at = nowTs - 2 * 60 * 60 * 1000;
+        fs.writeFileSync(dataFile, JSON.stringify(data, null, 2), 'utf8');
+      }
+      console.log(`   ⏰ 超时段落 1 個 (Carol 认领，已超时 30 分钟)`);
+    }
+  }
+
+  aliceClaimed.forEach(pm => {
+    forceAssignParagraph({
+      mirrorId: enMirror.id,
+      mappingId: pm.id,
+      userId: demoUsers[0].id,
+      userName: demoUsers[0].name,
+      durationMs: 25 * 60 * 1000
+    });
+  });
+  console.log(`   👤 Alice 认领 ${aliceClaimed.length} 個段落 (剩余约 25 分钟)`);
+
+  bobClaimed.forEach(pm => {
+    forceAssignParagraph({
+      mirrorId: enMirror.id,
+      mappingId: pm.id,
+      userId: demoUsers[1].id,
+      userName: demoUsers[1].name,
+      durationMs: 20 * 60 * 1000
+    });
+  });
+  console.log(`   👤 Bob 认领 ${bobClaimed.length} 個段落 (剩余约 20 分钟)`);
+
+  const unclaimedCount = pendingMappings.length - aliceClaimed.length - bobClaimed.length - (expiredClaim ? 1 : 0);
+  console.log(`   📭 待认领 ${Math.max(0, unclaimedCount)} 個段落`);
+
+  console.log('\n🎯 认领演示场景已创建:');
+  console.log('   - 翻译员Carol的 1 个超时段落（自动回收演示）');
+  console.log('   - 翻译员Alice的 3 个正在认领中的段落');
+  console.log('   - 翻译员Bob的 2 个正在认领中的段落');
+  console.log('   - 其余待认领段落');
+  console.log('\n💡 演示说明:');
+  console.log('   1. 打开镜像管理页 → 查看各语言认领状态');
+  console.log('   2. 进入翻译工作台 → 体验认领、释放、续期功能');
+  console.log('   3. 用不同用户身份登录 → 体验抢占限制（他人认领的段落不可编辑）');
+  console.log('   4. 查看翻译负载视图 → 按人查看工作量和超时情况');
+  console.log('   5. 等待1分钟后 → 观察超时段落被自动回收');
+  console.log('   6. 管理员可在镜像管理页 → 批量分配或强制转交段落');
 }
 
 module.exports = seedDemoData;
