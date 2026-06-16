@@ -163,6 +163,7 @@ function initDemoData() {
     current_node_ids: ['node_l2_approval'],
     visited_node_ids: ['node_start', 'node_condition_amount', 'node_l1_approval', 'node_l2_approval'],
     active_path: ['node_start', 'node_condition_amount', 'node_l1_approval', 'node_l2_approval'],
+    reject_round: 1,
     created_at: now() - 1000 * 60 * 60 * 24 * 2,
     updated_at: now() - 1000 * 60 * 60 * 3,
     created_by: 'user-zhangsan',
@@ -183,6 +184,7 @@ function initDemoData() {
     to_user_id: null,
     to_user_name: null,
     reject_target_node_id: null,
+    round: 1,
     created_at: t0
   });
   data.records.push({
@@ -196,6 +198,7 @@ function initDemoData() {
     to_user_id: null,
     to_user_name: null,
     reject_target_node_id: null,
+    round: 1,
     created_at: t0 + 1000
   });
   data.records.push({
@@ -209,6 +212,7 @@ function initDemoData() {
     to_user_id: null,
     to_user_name: null,
     reject_target_node_id: null,
+    round: 1,
     created_at: t0 + 2000
   });
   data.records.push({
@@ -222,6 +226,7 @@ function initDemoData() {
     to_user_id: null,
     to_user_name: null,
     reject_target_node_id: null,
+    round: 1,
     created_at: t0 + 1000 * 60 * 60 * 5
   });
   data.records.push({
@@ -235,6 +240,7 @@ function initDemoData() {
     to_user_id: null,
     to_user_name: null,
     reject_target_node_id: null,
+    round: 1,
     created_at: t0 + 1000 * 60 * 60 * 5 + 1000
   });
   data.records.push({
@@ -248,6 +254,7 @@ function initDemoData() {
     to_user_id: null,
     to_user_name: null,
     reject_target_node_id: null,
+    round: 1,
     created_at: t0 + 1000 * 60 * 60 * 5 + 2000
   });
   data.records.push({
@@ -261,6 +268,7 @@ function initDemoData() {
     to_user_id: null,
     to_user_name: null,
     reject_target_node_id: null,
+    round: 1,
     created_at: t0 + 1000 * 60 * 60 * 22
   });
 
@@ -348,12 +356,61 @@ function validateTemplate(template) {
       }
     }
   }
+
+  const inDegree = {};
+  const graph = {};
+  nodeIds.forEach(id => { inDegree[id] = 0; graph[id] = []; });
+
+  const addEdge = (from, to) => {
+    graph[from].push(to);
+    inDegree[to]++;
+  };
+
   if (edges && Array.isArray(edges)) {
     for (const edge of edges) {
       if (!nodeIds.has(edge.from)) return { valid: false, error: `边的源节点不存在: ${edge.from}` };
       if (!nodeIds.has(edge.to)) return { valid: false, error: `边的目标节点不存在: ${edge.to}` };
+      addEdge(edge.from, edge.to);
     }
   }
+
+  for (const node of nodes) {
+    if (node.type === NODE_TYPES.CONDITION) {
+      for (const branch of node.branches || []) {
+        if (branch.target_node_id) {
+          if (!nodeIds.has(branch.target_node_id)) {
+            return { valid: false, error: `条件节点 ${node.name || node.id} 的分支目标节点不存在: ${branch.target_node_id}` };
+          }
+          addEdge(node.id, branch.target_node_id);
+        }
+      }
+    }
+  }
+
+  const queue = [];
+  const visited = [];
+  Object.keys(inDegree).forEach(id => {
+    if (inDegree[id] === 0) queue.push(id);
+  });
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    visited.push(current);
+    for (const next of graph[current]) {
+      inDegree[next]--;
+      if (inDegree[next] === 0) queue.push(next);
+    }
+  }
+
+  if (visited.length !== nodeIds.size) {
+    const cycleNodes = Array.from(nodeIds).filter(id => !visited.includes(id));
+    const cycleNames = cycleNodes.map(id => {
+      const n = nodes.find(x => x.id === id);
+      return n ? (n.name || id) : id;
+    }).join('、');
+    return { valid: false, error: `检测到环路！流程模板不能包含循环。涉及节点：${cycleNames}` };
+  }
+
   return { valid: true };
 }
 
@@ -532,11 +589,13 @@ function getRecordsByInstanceId(instanceId, reload = true) {
 }
 
 function isUserTodo(instance, userId) {
+  if (!instance) return false;
   if (!userId) return false;
   if (instance.status !== APPROVAL_STATUS.PENDING) return false;
   const currentNodeIds = instance.current_node_ids || [];
   const template = getTemplateById(instance.template_id, { reload: false });
   if (!template) return false;
+  const currentRound = instance.reject_round || 0;
   for (const nodeId of currentNodeIds) {
     const node = template.nodes.find(n => n.id === nodeId);
     if (!node) continue;
@@ -546,7 +605,8 @@ function isUserTodo(instance, userId) {
           r.instance_id === instance.id &&
           r.node_id === nodeId &&
           r.user_id === userId &&
-          (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT)
+          (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT) &&
+          r.round === currentRound
         );
         if (!hasApproved) return true;
       }
@@ -556,7 +616,8 @@ function isUserTodo(instance, userId) {
           r.instance_id === instance.id &&
           r.node_id === nodeId &&
           r.user_id === userId &&
-          (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT)
+          (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT) &&
+          r.round === currentRound
         );
         if (!hasApproved) return true;
       }
@@ -578,6 +639,7 @@ function listTodos(userId) {
     const template = getTemplateById(inst.template_id, { reload: false });
     if (!template) continue;
     const currentNodeIds = inst.current_node_ids || [];
+    const currentRound = inst.reject_round || 0;
     for (const nodeId of currentNodeIds) {
       const node = template.nodes.find(n => n.id === nodeId);
       if (!node) continue;
@@ -589,7 +651,8 @@ function listTodos(userId) {
           r.instance_id === inst.id &&
           r.node_id === nodeId &&
           r.user_id === userId &&
-          (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT)
+          (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT) &&
+          r.round === currentRound
         );
         if (!hasApproved) isTodo = true;
       }
@@ -632,6 +695,7 @@ function createInstance({ templateId, documentId, documentTitle, metadata, creat
     current_node_ids: [],
     visited_node_ids: [],
     active_path: [],
+    reject_round: 0,
     created_at: now(),
     updated_at: now(),
     created_by: createdBy || null,
@@ -642,7 +706,7 @@ function createInstance({ templateId, documentId, documentTitle, metadata, creat
   return getInstanceById(instance.id, { reload: false });
 }
 
-function addRecord(instanceId, nodeId, action, { userId, userName, comment, toUserId, toUserName, rejectTargetNodeId }) {
+function addRecord(instanceId, nodeId, action, { userId, userName, comment, toUserId, toUserName, rejectTargetNodeId, round }) {
   const record = {
     id: data.nextRecordId++,
     instance_id: instanceId,
@@ -654,6 +718,7 @@ function addRecord(instanceId, nodeId, action, { userId, userName, comment, toUs
     to_user_id: toUserId || null,
     to_user_name: toUserName || null,
     reject_target_node_id: rejectTargetNodeId || null,
+    round: round !== undefined ? round : null,
     created_at: now()
   };
   data.records.push(record);
@@ -676,10 +741,13 @@ function startInstance(instanceId, { userId, userName }) {
   inst.status = APPROVAL_STATUS.PENDING;
   inst.visited_node_ids = [startNode.id];
   inst.active_path = [startNode.id];
+  inst.reject_round = 1;
 
+  const currentRound = inst.reject_round;
   addRecord(instanceId, startNode.id, ACTION_TYPES.START, {
     userId, userName,
-    comment: '启动审批流程'
+    comment: '启动审批流程',
+    round: currentRound
   });
 
   const advanceResult = advanceToNextNodes(instIdx, template, startNode.id, userId, userName);
@@ -696,6 +764,7 @@ function startInstance(instanceId, { userId, userName }) {
 
 function advanceToNextNodes(instIdx, template, fromNodeId, userId, userName) {
   const inst = data.instances[instIdx];
+  const currentRound = inst.reject_round || 0;
   const nextNodeIds = getNextNodes(template, fromNodeId, inst.metadata);
 
   if (nextNodeIds.length === 0) {
@@ -703,7 +772,8 @@ function advanceToNextNodes(instIdx, template, fromNodeId, userId, userName) {
     inst.current_node_ids = [];
     addRecord(inst.id, fromNodeId, ACTION_TYPES.AUTO_PASS, {
       userId: 'system', userName: '系统',
-      comment: '流程到达终点，审批完成'
+      comment: '流程到达终点，审批完成',
+      round: currentRound
     });
     return { completed: true };
   }
@@ -722,7 +792,8 @@ function advanceToNextNodes(instIdx, template, fromNodeId, userId, userName) {
     if (nextNode.type === NODE_TYPES.END) {
       addRecord(inst.id, nextNodeId, ACTION_TYPES.AUTO_PASS, {
         userId: 'system', userName: '系统',
-        comment: '流程到达结束节点'
+        comment: '流程到达结束节点',
+        round: currentRound
       });
       inst.status = APPROVAL_STATUS.COMPLETED;
       continue;
@@ -731,7 +802,8 @@ function advanceToNextNodes(instIdx, template, fromNodeId, userId, userName) {
     if (nextNode.type === NODE_TYPES.CONDITION) {
       addRecord(inst.id, nextNodeId, ACTION_TYPES.AUTO_PASS, {
         userId: 'system', userName: '系统',
-        comment: `条件网关判断: ${nextNode.name || nextNodeId}`
+        comment: `条件网关判断: ${nextNode.name || nextNodeId}`,
+        round: currentRound
       });
       const branchResult = advanceToNextNodes(instIdx, template, nextNodeId, userId, userName);
       if (branchResult && branchResult.error) return branchResult;
@@ -742,7 +814,8 @@ function advanceToNextNodes(instIdx, template, fromNodeId, userId, userName) {
       newCurrentNodes.push(nextNodeId);
       addRecord(inst.id, nextNodeId, ACTION_TYPES.ADVANCE, {
         userId, userName,
-        comment: `进入${nextNode.type === NODE_TYPES.COUNTERSIGN ? '会签' : '审批'}节点: ${nextNode.name || nextNodeId}`
+        comment: `进入${nextNode.type === NODE_TYPES.COUNTERSIGN ? '会签' : '审批'}节点: ${nextNode.name || nextNodeId}`,
+        round: currentRound
       });
     }
   }
@@ -751,7 +824,7 @@ function advanceToNextNodes(instIdx, template, fromNodeId, userId, userName) {
     const node = template.nodes.find(n => n.id === nid);
     if (!node) return false;
     if (node.type === NODE_TYPES.APPROVAL || node.type === NODE_TYPES.COUNTERSIGN) {
-      return !isNodeCompleted(inst.id, node);
+      return !isNodeCompleted(inst.id, node, inst);
     }
     return false;
   });
@@ -763,8 +836,13 @@ function advanceToNextNodes(instIdx, template, fromNodeId, userId, userName) {
   }
 }
 
-function isNodeCompleted(instanceId, node) {
-  const records = data.records.filter(r => r.instance_id === instanceId && r.node_id === node.id);
+function isNodeCompleted(instanceId, node, instance) {
+  const currentRound = instance ? (instance.reject_round || 0) : 0;
+  const records = data.records.filter(r =>
+    r.instance_id === instanceId &&
+    r.node_id === node.id &&
+    r.round === currentRound
+  );
   const approvals = records.filter(r => r.action === ACTION_TYPES.APPROVE);
   const rejections = records.filter(r => r.action === ACTION_TYPES.REJECT);
 
@@ -802,22 +880,25 @@ function approveInstance(instanceId, nodeId, { userId, userName, comment }) {
   if (!(node.approvers || []).includes(userId)) {
     return { error: '您不是该节点的审批人', status: 403 };
   }
+  const currentRound = inst.reject_round || 0;
   const existingRecord = data.records.find(r =>
     r.instance_id === instanceId &&
     r.node_id === nodeId &&
     r.user_id === userId &&
-    (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT)
+    (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT) &&
+    r.round === currentRound
   );
   if (existingRecord) {
     return { error: '您已在此节点处理过', status: 400 };
   }
 
-  addRecord(instanceId, nodeId, ACTION_TYPES.APPROVE, { userId, userName, comment });
+  addRecord(instanceId, nodeId, ACTION_TYPES.APPROVE, { userId, userName, comment, round: currentRound });
 
-  if (isNodeCompleted(instanceId, node)) {
+  if (isNodeCompleted(instanceId, node, inst)) {
     addRecord(instanceId, nodeId, ACTION_TYPES.AUTO_PASS, {
       userId: 'system', userName: '系统',
-      comment: node.type === NODE_TYPES.COUNTERSIGN ? '会签全部通过' : '审批通过'
+      comment: node.type === NODE_TYPES.COUNTERSIGN ? '会签全部通过' : '审批通过',
+      round: currentRound
     });
     const advanceResult = advanceToNextNodes(instIdx, template, nodeId, userId, userName);
     if (advanceResult && advanceResult.error) {
@@ -865,15 +946,21 @@ function rejectInstance(instanceId, nodeId, { userId, userName, comment, targetN
     }
   }
 
+  const oldRound = inst.reject_round || 0;
+  const newRound = oldRound + 1;
+  inst.reject_round = newRound;
+
   addRecord(instanceId, nodeId, ACTION_TYPES.REJECT, {
-    userId, userName, comment, rejectTargetNodeId: actualTargetNodeId
+    userId, userName, comment, rejectTargetNodeId: actualTargetNodeId,
+    round: oldRound
   });
 
   const targetNode = template.nodes.find(n => n.id === actualTargetNodeId);
   const targetName = targetNode ? (targetNode.name || targetNode.id) : actualTargetNodeId;
   addRecord(instanceId, actualTargetNodeId, ACTION_TYPES.ADVANCE, {
     userId: 'system', userName: '系统',
-    comment: `被驳回到节点: ${targetName}`
+    comment: `被驳回到节点: ${targetName}，进入第 ${newRound} 轮审批`,
+    round: newRound
   });
 
   inst.current_node_ids = [actualTargetNodeId];
@@ -919,8 +1006,10 @@ function transferInstance(instanceId, nodeId, { userId, userName, toUserId, toUs
     return { error: '您不是该节点的审批人，无法转交', status: 403 };
   }
 
+  const currentRound = inst.reject_round || 0;
   addRecord(instanceId, nodeId, ACTION_TYPES.TRANSFER, {
-    userId, userName, comment, toUserId, toUserName
+    userId, userName, comment, toUserId, toUserName,
+    round: currentRound
   });
 
   if (!node.approvers.includes(toUserId)) {
