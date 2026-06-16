@@ -17,6 +17,13 @@ const {
   forceAssignParagraph,
   CLAIM_CONFIG
 } = require('./mirrorService');
+const {
+  ANNOTATION_TYPES,
+  RELATION_TYPES,
+  createAnnotation,
+  createRelation,
+  getKnowledgeGraph
+} = require('./annotationService');
 
 function seedDemoData() {
   const existingContracts = listContracts();
@@ -93,6 +100,7 @@ function seedDemoData() {
 
   seedDocumentData();
   seedTemplateData();
+  seedKnowledgeGraphData();
 
   console.log('演示数据初始化完成');
 }
@@ -973,6 +981,244 @@ function seedClaimDemoData(docId) {
   console.log('   4. 查看翻译负载视图 → 按人查看工作量和超时情况');
   console.log('   5. 等待1分钟后 → 观察超时段落被自动回收');
   console.log('   6. 管理员可在镜像管理页 → 批量分配或强制转交段落');
+}
+
+function seedKnowledgeGraphData() {
+  const existingDocs = listDocuments();
+  let kgDoc = existingDocs.find(d => d.title === '2024年全球人工智能峰会报道');
+
+  if (!kgDoc) {
+    console.log('\n========== 初始化知识图谱演示数据 ==========');
+
+    const kgContent = `2024年全球人工智能峰会报道
+
+2024年6月15日至17日，2024年全球人工智能峰会在上海国际会议中心隆重举行。本次峰会以"AI赋能未来"为主题，吸引了来自全球50多个国家的超过3000名参会者。
+
+著名AI研究员张三教授在开幕式上发表了主题演讲，深入探讨了大语言模型的最新进展和未来发展方向。张三教授指出，多模态AI技术正在快速发展，未来的AI系统将能够同时理解文本、图像、音频等多种形式的信息。
+
+企业家李四先生作为圆桌论坛的嘉宾，分享了他对AI商业化应用的见解。李四先生认为，AI技术的落地需要与具体行业深度结合，才能真正创造价值。
+
+本次峰会期间还举办了多场技术分论坛和产品发布会。其中，关于AI伦理与社会影响的分论坛吸引了大量关注，与会专家就AI发展中的隐私保护、算法公平等问题进行了深入讨论。
+
+在闭幕式上，主办方宣布2025年全球人工智能峰会将在北京举办，期待全球AI领域的研究者和从业者再次相聚，共同推动AI技术的健康发展。`;
+
+    kgDoc = createDocument({
+      title: '2024年全球人工智能峰会报道',
+      content: kgContent,
+      description: '用于知识图谱标注功能演示的文档',
+      is_public: true
+    });
+
+    console.log('✅ 知识图谱演示文档已创建，ID:', kgDoc.id);
+    console.log('   文档标题：', kgDoc.title);
+
+    console.log('   设置文档权限...');
+    setOwner(kgDoc.id, 'user-admin');
+    addCollaborator(kgDoc.id, 'user-editor', 'editor', 'system-init');
+    addCollaborator(kgDoc.id, 'user-viewer', 'viewer', 'system-init');
+    console.log('   ✅ 权限配置完成：所有者=user-admin，编辑者=user-editor，只读用户=user-viewer');
+  } else {
+    console.log('已存在知识图谱演示文档，跳过文档创建');
+  }
+
+  const docId = kgDoc.id;
+  const existingKg = getKnowledgeGraph(docId);
+
+  if (existingKg.annotations.length > 0) {
+    console.log('已存在标注数据，跳过初始化');
+    console.log('   当前标注数：', existingKg.annotations.length);
+    console.log('   当前关系数：', existingKg.relations.length);
+    return;
+  }
+
+  console.log('\n创建演示标注数据...');
+
+  const doc = getDocumentById(docId);
+  const content = doc.versions[doc.versions.length - 1].content;
+
+  function findOffset(text) {
+    const idx = content.indexOf(text);
+    return idx >= 0 ? { start: idx, end: idx + text.length } : null;
+  }
+
+  const annotations = [];
+
+  const pos1 = findOffset('2024年全球人工智能峰会');
+  if (pos1) {
+    const ann = createAnnotation({
+      document_id: docId,
+      text: '2024年全球人工智能峰会',
+      type: ANNOTATION_TYPES.EVENT,
+      description: '2024年举办的全球人工智能领域顶级峰会',
+      start_offset: pos1.start,
+      end_offset: pos1.end,
+      created_by: 'system-demo'
+    });
+    if (!ann.error) annotations.push(ann);
+  }
+
+  const pos2 = findOffset('上海国际会议中心');
+  if (pos2) {
+    const ann = createAnnotation({
+      document_id: docId,
+      text: '上海国际会议中心',
+      type: ANNOTATION_TYPES.LOCATION,
+      description: '位于上海的大型会议场馆，2024年AI峰会的举办地',
+      start_offset: pos2.start,
+      end_offset: pos2.end,
+      created_by: 'system-demo'
+    });
+    if (!ann.error) annotations.push(ann);
+  }
+
+  const pos3 = findOffset('张三');
+  if (pos3) {
+    const ann = createAnnotation({
+      document_id: docId,
+      text: '张三',
+      type: ANNOTATION_TYPES.PERSON,
+      description: '著名AI研究员，在峰会上发表主题演讲',
+      start_offset: pos3.start,
+      end_offset: pos3.end,
+      created_by: 'system-demo'
+    });
+    if (!ann.error) annotations.push(ann);
+  }
+
+  const pos4 = findOffset('大语言模型');
+  if (pos4) {
+    const ann = createAnnotation({
+      document_id: docId,
+      text: '大语言模型',
+      type: ANNOTATION_TYPES.CONCEPT,
+      description: '基于Transformer架构的大规模预训练语言模型',
+      start_offset: pos4.start,
+      end_offset: pos4.end,
+      created_by: 'system-demo'
+    });
+    if (!ann.error) annotations.push(ann);
+  }
+
+  const pos5 = findOffset('多模态AI');
+  if (pos5) {
+    const ann = createAnnotation({
+      document_id: docId,
+      text: '多模态AI',
+      type: ANNOTATION_TYPES.CONCEPT,
+      description: '能够同时理解和处理多种模态信息的AI技术',
+      start_offset: pos5.start,
+      end_offset: pos5.end,
+      created_by: 'system-demo'
+    });
+    if (!ann.error) annotations.push(ann);
+  }
+
+  const pos6 = findOffset('李四');
+  if (pos6) {
+    const ann = createAnnotation({
+      document_id: docId,
+      text: '李四',
+      type: ANNOTATION_TYPES.PERSON,
+      description: '企业家，在峰会上分享AI商业化见解',
+      start_offset: pos6.start,
+      end_offset: pos6.end,
+      created_by: 'system-demo'
+    });
+    if (!ann.error) annotations.push(ann);
+  }
+
+  console.log('✅ 已创建', annotations.length, '个标注：');
+  annotations.forEach((ann, i) => {
+    console.log(`   ${i + 1}. [${ann.type_label}] ${ann.text}`);
+  });
+
+  console.log('\n创建演示关系数据...');
+
+  const relations = [];
+
+  const eventAnn = annotations.find(a => a.type === ANNOTATION_TYPES.EVENT);
+  const locationAnn = annotations.find(a => a.type === ANNOTATION_TYPES.LOCATION);
+  const person1Ann = annotations.find(a => a.type === ANNOTATION_TYPES.PERSON && a.text === '张三');
+  const person2Ann = annotations.find(a => a.type === ANNOTATION_TYPES.PERSON && a.text === '李四');
+  const concept1Ann = annotations.find(a => a.type === ANNOTATION_TYPES.CONCEPT && a.text === '大语言模型');
+  const concept2Ann = annotations.find(a => a.type === ANNOTATION_TYPES.CONCEPT && a.text === '多模态AI');
+
+  if (eventAnn && locationAnn) {
+    const rel = createRelation({
+      from_annotation_id: eventAnn.id,
+      to_annotation_id: locationAnn.id,
+      type: RELATION_TYPES.OCCURS_AT,
+      description: '2024年AI峰会在上海国际会议中心举办'
+    });
+    if (!rel.error) relations.push(rel);
+  }
+
+  if (person1Ann && eventAnn) {
+    const rel = createRelation({
+      from_annotation_id: person1Ann.id,
+      to_annotation_id: eventAnn.id,
+      type: RELATION_TYPES.PARTICIPATES,
+      description: '张三教授在AI峰会上发表主题演讲'
+    });
+    if (!rel.error) relations.push(rel);
+  }
+
+  if (person1Ann && concept1Ann) {
+    const rel = createRelation({
+      from_annotation_id: person1Ann.id,
+      to_annotation_id: concept1Ann.id,
+      type: RELATION_TYPES.RELATED_TO,
+      description: '张三教授深入探讨了大语言模型的发展'
+    });
+    if (!rel.error) relations.push(rel);
+  }
+
+  if (concept1Ann && concept2Ann) {
+    const rel = createRelation({
+      from_annotation_id: concept1Ann.id,
+      to_annotation_id: concept2Ann.id,
+      type: RELATION_TYPES.RELATED_TO,
+      description: '大语言模型是多模态AI技术的重要基础'
+    });
+    if (!rel.error) relations.push(rel);
+  }
+
+  if (person2Ann && eventAnn) {
+    const rel = createRelation({
+      from_annotation_id: person2Ann.id,
+      to_annotation_id: eventAnn.id,
+      type: RELATION_TYPES.PARTICIPATES,
+      description: '李四先生作为嘉宾参加AI峰会圆桌论坛'
+    });
+    if (!rel.error) relations.push(rel);
+  }
+
+  console.log('✅ 已创建', relations.length, '条关系：');
+  relations.forEach((rel, i) => {
+    console.log(`   ${i + 1}. ${rel.from_annotation.text} --[${rel.type_label}]--> ${rel.to_annotation.text}`);
+  });
+
+  const finalKg = getKnowledgeGraph(docId);
+  console.log('\n📊 知识图谱统计：');
+  console.log('   标注总数：', finalKg.stats.annotation_count);
+  console.log('   关系总数：', finalKg.stats.relation_count);
+  Object.entries(finalKg.stats.type_counts).forEach(([type, count]) => {
+    const typeLabel = type === 'person' ? '人物' :
+                      type === 'location' ? '地点' :
+                      type === 'event' ? '事件' : '概念';
+    console.log(`   ${typeLabel}：${count}个`);
+  });
+
+  console.log('\n💡 知识图谱演示说明：');
+  console.log('   1. 文档阅读页 → http://localhost:3000/document-reader.html?docId=' + docId);
+  console.log('   2. 知识图谱页 → http://localhost:3000/knowledge-graph.html?docId=' + docId);
+  console.log('   3. 在文档中选中文字创建标注，支持4种类型');
+  console.log('   4. 点击高亮文字查看标注详情和关联关系');
+  console.log('   5. 在知识图谱页面可以拖拽节点调整布局');
+  console.log('   6. 点击图谱节点可跳转回文档原文位置');
+  console.log('   7. 打开多个浏览器窗口可体验实时同步功能');
+
+  console.log('\n✅ 知识图谱演示数据初始化完成！');
 }
 
 module.exports = seedDemoData;

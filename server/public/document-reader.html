@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>文档阅读 - 知识图谱标注系统</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/annotation.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="header-left">
+        <h1 class="app-title">📄 文档阅读</h1>
+        <span id="documentTitle" class="document-title">加载中...</span>
+      </div>
+      <div class="header-right">
+        <button id="backBtn" class="btn btn-secondary">← 返回列表</button>
+        <button id="viewGraphBtn" class="btn btn-primary">📊 查看知识图谱</button>
+        <div class="connection-status" id="connectionStatus">
+          <span class="status-dot"></span>
+          <span class="status-text">连接中...</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="main-content">
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <h3>标注类型</h3>
+          <div class="annotation-types">
+            <div class="type-item" data-type="person">
+              <span class="type-color" style="background: #fef3c7; border-color: #f59e0b;"></span>
+              <span class="type-label">人物</span>
+            </div>
+            <div class="type-item" data-type="location">
+              <span class="type-color" style="background: #dbeafe; border-color: #3b82f6;"></span>
+              <span class="type-label">地点</span>
+            </div>
+            <div class="type-item" data-type="event">
+              <span class="type-color" style="background: #fce7f3; border-color: #ec4899;"></span>
+              <span class="type-label">事件</span>
+            </div>
+            <div class="type-item" data-type="concept">
+              <span class="type-color" style="background: #d1fae5; border-color: #10b981;"></span>
+              <span class="type-label">概念</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>标注列表</h3>
+          <div id="annotationList" class="annotation-list">
+            <div class="empty-state">暂无标注</div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="content-area">
+        <div class="document-toolbar">
+          <div class="toolbar-info">
+            <span id="annotationCount" class="info-badge">0 个标注</span>
+            <span id="relationCount" class="info-badge">0 条关系</span>
+          </div>
+          <div class="toolbar-actions">
+            <span class="hint">💡 选中文本后点击弹出的按钮创建标注</span>
+          </div>
+        </div>
+
+        <div id="documentContent" class="document-content">
+          <div class="loading">加载文档内容中...</div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div id="selectionToolbar" class="selection-toolbar hidden">
+    <button class="selection-btn" data-type="person" title="人物">
+      <span class="btn-color" style="background: #fef3c7; border-color: #f59e0b;"></span>
+      人物
+    </button>
+    <button class="selection-btn" data-type="location" title="地点">
+      <span class="btn-color" style="background: #dbeafe; border-color: #3b82f6;"></span>
+      地点
+    </button>
+    <button class="selection-btn" data-type="event" title="事件">
+      <span class="btn-color" style="background: #fce7f3; border-color: #ec4899;"></span>
+      事件
+    </button>
+    <button class="selection-btn" data-type="concept" title="概念">
+      <span class="btn-color" style="background: #d1fae5; border-color: #10b981;"></span>
+      概念
+    </button>
+  </div>
+
+  <div id="annotationModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modalTitle">创建标注</h3>
+        <button class="modal-close" id="modalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>选中文本</label>
+          <div id="selectedTextPreview" class="text-preview"></div>
+        </div>
+        <div class="form-group">
+          <label>标注类型</label>
+          <select id="annotationType" class="form-control">
+            <option value="person">人物</option>
+            <option value="location">地点</option>
+            <option value="event">事件</option>
+            <option value="concept">概念</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>关联描述</label>
+          <textarea id="annotationDescription" class="form-control" rows="3" placeholder="输入该标注的详细描述..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="modalCancel">取消</button>
+        <button class="btn btn-primary" id="modalSave">保存标注</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="annotationDetail" class="annotation-detail hidden">
+    <div class="detail-header">
+      <span id="detailType" class="detail-type"></span>
+      <button class="detail-close" id="detailClose">&times;</button>
+    </div>
+    <div class="detail-body">
+      <h4 id="detailText" class="detail-text"></h4>
+      <p id="detailDescription" class="detail-description"></p>
+      <div class="detail-meta">
+        <span>创建者: <span id="detailCreator"></span></span>
+        <span>创建时间: <span id="detailTime"></span></span>
+      </div>
+      <div class="detail-relations" id="detailRelations">
+        <h5>关联标注</h5>
+        <div id="relationList" class="relation-list"></div>
+      </div>
+      <div class="detail-actions">
+        <button class="btn btn-sm btn-primary" id="addRelationBtn">+ 添加关系</button>
+        <button class="btn btn-sm btn-danger" id="deleteAnnotationBtn">删除标注</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="relationModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>创建关系</h3>
+        <button class="modal-close" id="relationModalClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>从标注</label>
+          <div id="fromAnnotationPreview" class="text-preview"></div>
+        </div>
+        <div class="form-group">
+          <label>关系类型</label>
+          <select id="relationType" class="form-control">
+            <option value="participates">参与</option>
+            <option value="occurs_at">发生于</option>
+            <option value="related_to">关联</option>
+            <option value="created">创建</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>指向标注</label>
+          <select id="toAnnotationSelect" class="form-control"></select>
+        </div>
+        <div class="form-group">
+          <label>关系描述</label>
+          <textarea id="relationDescription" class="form-control" rows="2" placeholder="可选：描述这条关系的详细信息..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="relationModalCancel">取消</button>
+        <button class="btn btn-primary" id="relationModalSave">保存关系</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/document-reader.js"></script>
+</body>
+</html>

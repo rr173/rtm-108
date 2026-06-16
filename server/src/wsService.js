@@ -4,6 +4,7 @@ const { getReviewById, getCommentsByReview } = require('./reviewService');
 const { listMirrorsByDocument, getMirrorById, getTranslationWorkbench } = require('./mirrorService');
 const { getDocumentById } = require('./documentService');
 const { getInstanceById, listTodos } = require('./approvalWorkflowService');
+const { getKnowledgeGraph } = require('./annotationService');
 
 class WsService {
   constructor(server) {
@@ -20,6 +21,8 @@ class WsService {
     this.clientApprovals = new Map();
     this.todoSubscriptions = new Map();
     this.clientTodos = new Map();
+    this.annotationSubscriptions = new Map();
+    this.clientAnnotations = new Map();
 
     this.wss.on('connection', (ws) => {
       ws.id = Math.random().toString(36).substr(2, 9);
@@ -83,6 +86,12 @@ class WsService {
         break;
       case 'unsubscribe_todos':
         this.unsubscribeTodos(ws, data.userId);
+        break;
+      case 'subscribe_annotations':
+        this.subscribeAnnotations(ws, data.documentId);
+        break;
+      case 'unsubscribe_annotations':
+        this.unsubscribeAnnotations(ws, data.documentId);
         break;
       default:
         ws.send(JSON.stringify({ type: 'error', message: 'Unknown message type' }));
@@ -515,6 +524,70 @@ class WsService {
     });
   }
 
+  subscribeAnnotations(ws, documentId) {
+    const docId = parseInt(documentId);
+    if (!this.annotationSubscriptions.has(docId)) {
+      this.annotationSubscriptions.set(docId, new Set());
+    }
+    this.annotationSubscriptions.get(docId).add(ws);
+
+    if (!this.clientAnnotations.has(ws)) {
+      this.clientAnnotations.set(ws, new Set());
+    }
+    this.clientAnnotations.get(ws).add(docId);
+
+    const graph = getKnowledgeGraph(docId);
+    ws.send(JSON.stringify({
+      type: 'annotations_status',
+      documentId: docId,
+      graph
+    }));
+  }
+
+  unsubscribeAnnotations(ws, documentId) {
+    const docId = parseInt(documentId);
+    if (this.annotationSubscriptions.has(docId)) {
+      this.annotationSubscriptions.get(docId).delete(ws);
+    }
+    if (this.clientAnnotations.has(ws)) {
+      this.clientAnnotations.get(ws).delete(docId);
+    }
+  }
+
+  notifyAnnotationUpdate(documentId, annotation, eventType = 'annotation_updated') {
+    const docId = parseInt(documentId);
+    const message = JSON.stringify({
+      type: eventType,
+      documentId: docId,
+      annotation
+    });
+
+    if (this.annotationSubscriptions.has(docId)) {
+      this.annotationSubscriptions.get(docId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+  }
+
+  notifyRelationUpdate(documentId, relation, eventType = 'relation_updated') {
+    const docId = parseInt(documentId);
+    const message = JSON.stringify({
+      type: eventType,
+      documentId: docId,
+      relation
+    });
+
+    if (this.annotationSubscriptions.has(docId)) {
+      this.annotationSubscriptions.get(docId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+  }
+
   cleanupClient(ws) {
     const contracts = this.clientContracts.get(ws);
     if (contracts) {
@@ -574,6 +647,16 @@ class WsService {
         }
       });
       this.clientTodos.delete(ws);
+    }
+
+    const annotations = this.clientAnnotations.get(ws);
+    if (annotations) {
+      annotations.forEach(documentId => {
+        if (this.annotationSubscriptions.has(documentId)) {
+          this.annotationSubscriptions.get(documentId).delete(ws);
+        }
+      });
+      this.clientAnnotations.delete(ws);
     }
   }
 }

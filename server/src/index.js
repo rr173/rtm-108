@@ -148,6 +148,26 @@ const {
 
 const { validateExpression } = require('./approvalExpressionParser');
 
+const {
+  ANNOTATION_TYPES,
+  ANNOTATION_TYPE_LABELS,
+  ANNOTATION_COLORS,
+  RELATION_TYPES,
+  RELATION_TYPE_LABELS,
+  listAnnotationsByDocument,
+  getAnnotationById,
+  createAnnotation,
+  updateAnnotation,
+  deleteAnnotation,
+  listRelationsByDocument,
+  listRelationsByAnnotation,
+  getRelationById,
+  createRelation,
+  updateRelation,
+  deleteRelation,
+  getKnowledgeGraph
+} = require('./annotationService');
+
 const app = express();
 const server = http.createServer(app);
 const wsService = new WsService(server);
@@ -2279,6 +2299,365 @@ app.get('/api/current-user', (req, res) => {
   });
 });
 
+// ============ 知识图谱 API ============
+
+app.get('/api/annotation-types', (req, res) => {
+  res.json({
+    types: Object.entries(ANNOTATION_TYPES).map(([key, value]) => ({
+      key,
+      value,
+      label: ANNOTATION_TYPE_LABELS[value],
+      color: ANNOTATION_COLORS[value]
+    })),
+    relation_types: Object.entries(RELATION_TYPES).map(([key, value]) => ({
+      key,
+      value,
+      label: RELATION_TYPE_LABELS[value]
+    }))
+  });
+});
+
+app.get(
+  '/api/documents/:id/annotations',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const annotations = listAnnotationsByDocument(docId);
+      res.json(annotations);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/annotations/:id',
+  (req, res) => {
+    try {
+      const annotation = getAnnotationById(parseInt(req.params.id));
+      if (!annotation) {
+        return res.status(404).json({ error: '标注不存在' });
+      }
+      const doc = getDocumentById(annotation.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(annotation.document_id, userId, ROLES.VIEWER, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+      res.json(annotation);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents/:id/annotations',
+  logAudit(OPERATION_TYPES.DOCUMENT_EDIT, {
+    getParams: (req) => ({ action: 'create_annotation', type: req.body?.type })
+  }),
+  requireDocPermission(ROLES.EDITOR),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const { start_offset, end_offset, text, type, description } = req.body;
+
+      const result = createAnnotation({
+        document_id: docId,
+        start_offset,
+        end_offset,
+        text,
+        type,
+        description,
+        created_by: req.currentUser.name
+      });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      wsService.notifyAnnotationUpdate(docId, result, 'annotation_created');
+
+      res.status(201).json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put(
+  '/api/annotations/:id',
+  logAudit(OPERATION_TYPES.DOCUMENT_EDIT, {
+    getParams: (req) => ({ action: 'update_annotation', annotation_id: req.params.id })
+  }),
+  (req, res) => {
+    try {
+      const annotationId = parseInt(req.params.id);
+      const existing = getAnnotationById(annotationId);
+      if (!existing) {
+        return res.status(404).json({ error: '标注不存在' });
+      }
+
+      const doc = getDocumentById(existing.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(existing.document_id, userId, ROLES.EDITOR, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+
+      const { description, position_x, position_y } = req.body;
+      const result = updateAnnotation(annotationId, { description, position_x, position_y });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      wsService.notifyAnnotationUpdate(existing.document_id, result, 'annotation_updated');
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.delete(
+  '/api/annotations/:id',
+  logAudit(OPERATION_TYPES.DOCUMENT_EDIT, {
+    getParams: (req) => ({ action: 'delete_annotation', annotation_id: req.params.id })
+  }),
+  (req, res) => {
+    try {
+      const annotationId = parseInt(req.params.id);
+      const existing = getAnnotationById(annotationId);
+      if (!existing) {
+        return res.status(404).json({ error: '标注不存在' });
+      }
+
+      const doc = getDocumentById(existing.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(existing.document_id, userId, ROLES.EDITOR, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+
+      const result = deleteAnnotation(annotationId);
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      wsService.notifyAnnotationUpdate(existing.document_id, {
+        id: annotationId,
+        deleted_relations: result.deleted_relations
+      }, 'annotation_deleted');
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/relations',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const relations = listRelationsByDocument(docId);
+      res.json(relations);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/annotations/:id/relations',
+  (req, res) => {
+    try {
+      const annotationId = parseInt(req.params.id);
+      const annotation = getAnnotationById(annotationId);
+      if (!annotation) {
+        return res.status(404).json({ error: '标注不存在' });
+      }
+      const doc = getDocumentById(annotation.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(annotation.document_id, userId, ROLES.VIEWER, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+      const relations = listRelationsByAnnotation(annotationId);
+      res.json(relations);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get('/api/relations/:id', (req, res) => {
+  try {
+    const relation = getRelationById(parseInt(req.params.id));
+    if (!relation) {
+      return res.status(404).json({ error: '关系不存在' });
+    }
+    const doc = getDocumentById(relation.from_annotation?.document_id || relation.to_annotation?.document_id, { reload: false });
+    if (doc) {
+      const userId = req.currentUser.id;
+      const docId = relation.from_annotation ? relation.from_annotation.document_id : (relation.to_annotation ? relation.to_annotation.document_id : null);
+      if (docId) {
+        const permissionResult = checkPermission(docId, userId, ROLES.VIEWER, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+    }
+    res.json(relation);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post(
+  '/api/documents/:id/relations',
+  logAudit(OPERATION_TYPES.DOCUMENT_EDIT, {
+    getParams: (req) => ({ action: 'create_relation', type: req.body?.type })
+  }),
+  requireDocPermission(ROLES.EDITOR),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const { from_annotation_id, to_annotation_id, type, description } = req.body;
+
+      const result = createRelation({
+        from_annotation_id,
+        to_annotation_id,
+        type,
+        description
+      });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      wsService.notifyRelationUpdate(docId, result, 'relation_created');
+
+      res.status(201).json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put(
+  '/api/relations/:id',
+  logAudit(OPERATION_TYPES.DOCUMENT_EDIT, {
+    getParams: (req) => ({ action: 'update_relation', relation_id: req.params.id })
+  }),
+  (req, res) => {
+    try {
+      const relationId = parseInt(req.params.id);
+      const existing = getRelationById(relationId);
+      if (!existing) {
+        return res.status(404).json({ error: '关系不存在' });
+      }
+
+      const docId = existing.from_annotation?.document_id || (existing.to_annotation ? existing.to_annotation.document_id : null);
+      if (docId) {
+        const doc = getDocumentById(docId, { reload: false });
+        if (doc) {
+          const userId = req.currentUser.id;
+          const permissionResult = checkPermission(docId, userId, ROLES.EDITOR, doc.is_public);
+          if (!permissionResult.allowed) {
+            return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+          }
+        }
+      }
+
+      const { description } = req.body;
+      const result = updateRelation(relationId, { description });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      if (docId) {
+        wsService.notifyRelationUpdate(docId, result, 'relation_updated');
+      }
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.delete(
+  '/api/relations/:id',
+  logAudit(OPERATION_TYPES.DOCUMENT_EDIT, {
+    getParams: (req) => ({ action: 'delete_relation', relation_id: req.params.id })
+  }),
+  (req, res) => {
+    try {
+      const relationId = parseInt(req.params.id);
+      const existing = getRelationById(relationId);
+      if (!existing) {
+        return res.status(404).json({ error: '关系不存在' });
+      }
+
+      const docId = existing.from_annotation?.document_id || (existing.to_annotation ? existing.to_annotation.document_id : null);
+      if (docId) {
+        const doc = getDocumentById(docId, { reload: false });
+        if (doc) {
+          const userId = req.currentUser.id;
+          const permissionResult = checkPermission(docId, userId, ROLES.EDITOR, doc.is_public);
+          if (!permissionResult.allowed) {
+            return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+          }
+        }
+      }
+
+      const result = deleteRelation(relationId);
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      if (docId) {
+        wsService.notifyRelationUpdate(docId, { id: relationId }, 'relation_deleted');
+      }
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/knowledge-graph',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const graph = getKnowledgeGraph(docId);
+      res.json(graph);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
 // ============ 页面路由 ============
 
 app.get('/templates', (req, res) => {
@@ -2343,6 +2722,14 @@ app.get('/approval/document/:instanceId', (req, res) => {
 
 app.get('/approval/my-todos', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'approval-my-todos.html'));
+});
+
+app.get('/document/:id', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'document-reader.html'));
+});
+
+app.get('/graph/:documentId', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'knowledge-graph.html'));
 });
 
 seedDemoData();

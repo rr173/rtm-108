@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>知识图谱可视化</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/annotation.css">
+  <link rel="stylesheet" href="/css/graph.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="header-left">
+        <h1 class="app-title">📊 知识图谱</h1>
+        <span id="documentTitle" class="document-title">加载中...</span>
+      </div>
+      <div class="header-right">
+        <button id="backBtn" class="btn btn-secondary">← 返回文档</button>
+        <button id="resetLayoutBtn" class="btn btn-secondary">🔄 重置布局</button>
+        <button id="autoLayoutBtn" class="btn btn-primary">✨ 自动布局</button>
+        <div class="connection-status" id="connectionStatus">
+          <span class="status-dot"></span>
+          <span class="status-text">连接中...</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="graph-container">
+      <aside class="graph-sidebar">
+        <div class="sidebar-section">
+          <h3>图谱统计</h3>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <span class="stat-value" id="statAnnotations">0</span>
+              <span class="stat-label">标注总数</span>
+            </div>
+            <div class="stat-card">
+              <span class="stat-value" id="statRelations">0</span>
+              <span class="stat-label">关系总数</span>
+            </div>
+          </div>
+          <div class="type-stats" id="typeStats"></div>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>图例说明</h3>
+          <div class="legend-list">
+            <div class="legend-item">
+              <span class="legend-color" style="background: #fef3c7; border-color: #f59e0b;"></span>
+              <span class="legend-label">人物</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-color" style="background: #dbeafe; border-color: #3b82f6;"></span>
+              <span class="legend-label">地点</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-color" style="background: #fce7f3; border-color: #ec4899;"></span>
+              <span class="legend-label">事件</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-color" style="background: #d1fae5; border-color: #10b981;"></span>
+              <span class="legend-label">概念</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <h3>操作说明</h3>
+          <ul class="instructions">
+            <li>🖱️ 拖拽节点调整位置</li>
+            <li>👆 点击节点查看详情</li>
+            <li>🔗 点击关系查看描述</li>
+            <li>📍 双击节点跳转文档</li>
+          </ul>
+        </div>
+      </aside>
+
+      <main class="graph-main">
+        <div class="graph-canvas-container" id="graphContainer">
+          <svg id="graphSvg" class="graph-svg">
+            <defs>
+              <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                <polygon points="0 0, 10 3.5, 0 7" fill="#6b7280" />
+              </marker>
+              <marker id="arrowhead-hover" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+                <polygon points="0 0, 10 3.5, 0 7" fill="#374151" />
+              </marker>
+              <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+                <feMerge>
+                  <feMergeNode in="coloredBlur"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+            </defs>
+            <g id="edgesGroup"></g>
+            <g id="nodesGroup"></g>
+          </svg>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div id="nodeTooltip" class="node-tooltip hidden">
+    <div class="tooltip-header">
+      <span id="tooltipType" class="tooltip-type"></span>
+    </div>
+    <div class="tooltip-body">
+      <h4 id="tooltipText"></h4>
+      <p id="tooltipDescription"></p>
+      <div class="tooltip-actions">
+        <span class="tooltip-hint">双击跳转文档</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/knowledge-graph.js"></script>
+</body>
+</html>
