@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>审批流程模板编辑器</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .editor-header { background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); color: #fff; padding: 20px 0; }
+  .editor-layout { display: grid; grid-template-columns: 260px 1fr 300px; gap: 18px; margin-top: 18px; min-height: calc(100vh - 180px); }
+  .panel { background: #fff; border-radius: 12px; border: 1px solid #f1f5f9; overflow: hidden; display: flex; flex-direction: column; }
+  .panel-header { padding: 14px 18px; border-bottom: 1px solid #f1f5f9; font-weight: 600; font-size: 14px; color: #1e293b; display: flex; justify-content: space-between; align-items: center; }
+  .panel-body { padding: 14px; overflow-y: auto; flex: 1; }
+  .palette-item { padding: 12px 14px; border: 2px solid #e2e8f0; border-radius: 10px; margin-bottom: 10px; cursor: pointer; display: flex; align-items: center; gap: 10px; transition: all 0.2s; user-select: none; }
+  .palette-item:hover { border-color: #6366f1; background: #f5f3ff; transform: translateX(3px); }
+  .palette-icon { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+  .canvas-wrap { position: relative; min-height: 500px; overflow: auto; background: repeating-linear-gradient(45deg, #fafbff, #fafbff 10px, #f5f7ff 10px, #f5f7ff 20px); }
+  .canvas-svg-wrap { min-width: 100%; padding: 20px; }
+  .canvas-svg-wrap svg { min-width: 100%; display: block; }
+  .form-label { display: block; font-size: 12px; font-weight: 500; color: #64748b; margin-bottom: 5px; margin-top: 10px; }
+  .form-input, .form-textarea, .form-select { width: 100%; padding: 8px 10px; border: 2px solid #e2e8f0; border-radius: 6px; font-size: 13px; box-sizing: border-box; font-family: inherit; }
+  .form-input:focus, .form-textarea:focus, .form-select:focus { outline: none; border-color: #6366f1; }
+  .chip-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .chip { display: inline-flex; align-items: center; padding: 3px 10px; background: #eef2ff; color: #4f46e5; border-radius: 12px; font-size: 11px; font-weight: 500; }
+  .branch-item { padding: 10px; background: #fafbff; border: 1px dashed #c7d2fe; border-radius: 8px; margin-bottom: 8px; }
+  .branch-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .remove-btn { background: none; border: none; color: #ef4444; cursor: pointer; font-size: 14px; padding: 2px 6px; }
+  .remove-btn:hover { background: #fee2e2; border-radius: 4px; }
+  .mini-btn { padding: 5px 10px; font-size: 12px; border-radius: 6px; border: 1px solid #e2e8f0; background: #fff; cursor: pointer; color: #475569; }
+  .mini-btn:hover { background: #f8fafc; }
+  .mini-btn.primary { background: #6366f1; color: #fff; border-color: #6366f1; }
+  .mini-btn.primary:hover { background: #4f46e5; }
+  .mini-btn.success { background: #10b981; color: #fff; border-color: #10b981; }
+  .node-props-title { font-size: 13px; font-weight: 600; color: #1e293b; margin-bottom: 6px; }
+  .node-type-tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+  .expr-valid { color: #10b981; font-size: 11px; margin-top: 4px; }
+  .expr-invalid { color: #ef4444; font-size: 11px; margin-top: 4px; }
+  .tip { font-size: 11px; color: #94a3b8; line-height: 1.5; }
+  .empty-prop { text-align: center; padding: 40px 10px; color: #94a3b8; font-size: 12px; }
+  .edge-prop { padding: 8px; background: #f8fafc; border-radius: 6px; margin-bottom: 6px; font-size: 12px; }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  .modal { background: #fff; border-radius: 14px; width: 92%; max-width: 560px; max-height: 85vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+  .modal-header { padding: 16px 20px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center; }
+  .modal-body { padding: 20px; overflow-y: auto; }
+  .modal-footer { padding: 14px 20px; border-top: 1px solid #f1f5f9; display: flex; gap: 10px; justify-content: flex-end; }
+  .close-btn { background: none; border: none; font-size: 22px; cursor: pointer; color: #94a3b8; padding: 0 6px; line-height: 1; }
+  .users-dropdown { position: absolute; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.1); max-height: 200px; overflow-y: auto; z-index: 10; width: 100%; }
+  .users-dropdown div { padding: 8px 12px; cursor: pointer; font-size: 13px; }
+  .users-dropdown div:hover { background: #f5f3ff; }
+  .relative { position: relative; }
+</style>
+</head>
+<body>
+
+<div class="editor-header">
+  <div class="container">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div>
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:6px;">
+          <a href="/approval" class="btn btn-secondary" style="background:rgba(255,255,255,0.18); border:none; color:#fff;">← 返回</a>
+          <h1 style="margin:0; font-size:22px;">📐 审批流程模板编辑器</h1>
+        </div>
+        <p style="margin:4px 0 0; opacity:0.9; font-size:13px;">拖动左侧节点到画布或直接点击添加 · 点击节点编辑属性 · 支持条件分支</p>
+      </div>
+      <div style="display:flex; gap:10px;">
+        <button class="btn btn-secondary" style="background:rgba(255,255,255,0.2); border:none; color:#fff;" onclick="location.reload()">↺ 重置</button>
+        <button class="btn btn-primary" style="background:#fff; color:#6366f1;" onclick="saveTemplate()">💾 保存模板</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <div style="margin:14px 0;">
+    <div style="display:flex; gap:10px; align-items:center;">
+      <label style="font-size:13px; font-weight:500; color:#475569;">模板名称：</label>
+      <input class="form-input" id="tplName" style="width:340px;" placeholder="请输入模板名称">
+      <label style="font-size:13px; font-weight:500; color:#475569; margin-left:10px;">描述：</label>
+      <input class="form-input" id="tplDesc" style="flex:1;" placeholder="简要描述用途">
+    </div>
+  </div>
+  <div id="validationMsg"></div>
+</div>
+
+<div class="container editor-layout">
+  <div class="panel">
+    <div class="panel-header">节点库</div>
+    <div class="panel-body">
+      <div class="tip" style="margin-bottom:12px;">点击节点类型添加到流程末尾</div>
+      <div class="palette-item" onclick="addNode('start')">
+        <div class="palette-icon" style="background:#dcfce7; color:#16a34a;">▶</div>
+        <div>
+          <div style="font-weight:600; font-size:13px; color:#1e293b;">开始节点</div>
+          <div style="font-size:11px; color:#64748b;">流程起点，只能有1个</div>
+        </div>
+      </div>
+      <div class="palette-item" onclick="addNode('approval')">
+        <div class="palette-icon" style="background:#dbeafe; color:#2563eb;">✓</div>
+        <div>
+          <div style="font-weight:600; font-size:13px; color:#1e293b;">普通审批</div>
+          <div style="font-size:11px; color:#64748b;">任一审批人通过即可</div>
+        </div>
+      </div>
+      <div class="palette-item" onclick="addNode('countersign')">
+        <div class="palette-icon" style="background:#ede9fe; color:#7c3aed;">✦</div>
+        <div>
+          <div style="font-weight:600; font-size:13px; color:#1e293b;">会签节点</div>
+          <div style="font-size:11px; color:#64748b;">全部审批人通过才继续</div>
+        </div>
+      </div>
+      <div class="palette-item" onclick="addNode('condition')">
+        <div class="palette-icon" style="background:#fef3c7; color:#d97706;">◆</div>
+        <div>
+          <div style="font-weight:600; font-size:13px; color:#1e293b;">条件网关</div>
+          <div style="font-size:11px; color:#64748b;">根据条件自动走分支</div>
+        </div>
+      </div>
+      <div class="palette-item" onclick="addNode('end')">
+        <div class="palette-icon" style="background:#f1f5f9; color:#475569;">⏹</div>
+        <div>
+          <div style="font-weight:600; font-size:13px; color:#1e293b;">结束节点</div>
+          <div style="font-size:11px; color:#64748b;">流程终点，只能有1个</div>
+        </div>
+      </div>
+
+      <div style="margin-top:20px; padding-top:14px; border-top:1px dashed #e2e8f0;">
+        <div style="font-weight:600; font-size:13px; color:#1e293b; margin-bottom:8px;">🔗 连线管理</div>
+        <div class="tip" style="margin-bottom:10px;">条件网关通过分支配置连线，普通节点自动连线到下一节点</div>
+        <button class="mini-btn" style="width:100%;" onclick="autoWireAll()">🔧 自动重建连线</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      流程图预览
+      <span style="font-size:11px; font-weight:normal; color:#64748b;">节点数: <span id="nodeCount">0</span></span>
+    </div>
+    <div class="panel-body canvas-wrap" id="canvasWrap">
+      <div class="canvas-svg-wrap" id="canvasSvg"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">节点属性</div>
+    <div class="panel-body" id="propPanel">
+      <div class="empty-prop">
+        点击左侧节点添加<br>或点击画布中节点编辑属性
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/js/approval-common.js"></script>
+<script src="/js/approval-svg-renderer.js"></script>
+<script src="/js/approval-template-editor.js"></script>
+</body>
+</html>

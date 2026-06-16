@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>我的待办 - 审批工作流</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .page-header { background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%); color: #fff; padding: 22px 0; }
+  .user-selector { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .user-pill { padding: 5px 12px; background: rgba(255,255,255,0.15); color: #fff; border-radius: 16px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
+  .user-pill:hover { background: rgba(255,255,255,0.25); }
+  .user-pill.active { background: #fff; color: #dc2626; border-color: #fff; font-weight: 600; }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin: 22px 0; }
+  .stat-card { background: #fff; border-radius: 12px; padding: 18px; border: 1px solid #f1f5f9; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+  .stat-number { font-size: 30px; font-weight: 700; line-height: 1; }
+  .stat-label { font-size: 13px; color: #64748b; margin-top: 7px; }
+  .panel { background: #fff; border-radius: 12px; border: 1px solid #f1f5f9; overflow: hidden; }
+  .panel-header { padding: 14px 18px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center; }
+  .panel-title { margin: 0; font-size: 15px; font-weight: 600; color: #1e293b; }
+  .panel-body { padding: 0; }
+  .todo-item { padding: 16px 18px; border-bottom: 1px solid #f8fafc; display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; transition: background 0.15s; cursor: pointer; }
+  .todo-item:last-child { border-bottom: none; }
+  .todo-item:hover { background: #fafbff; }
+  .todo-main { flex: 1; min-width: 0; }
+  .todo-title { font-size: 15px; font-weight: 600; color: #1e293b; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .todo-meta { display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; color: #64748b; }
+  .tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+  .todo-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
+  .mini-btn { padding: 5px 12px; font-size: 12px; border-radius: 6px; border: 1px solid #e2e8f0; background: #fff; cursor: pointer; color: #475569; font-weight: 500; transition: all 0.15s; }
+  .mini-btn:hover { background: #f1f5f9; border-color: #cbd5e1; }
+  .mini-btn.primary { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+  .mini-btn.primary:hover { background: #2563eb; }
+  .mini-btn.success { background: #10b981; color: #fff; border-color: #10b981; }
+  .mini-btn.success:hover { background: #059669; }
+  .mini-btn.danger { background: #ef4444; color: #fff; border-color: #ef4444; }
+  .mini-btn.danger:hover { background: #dc2626; }
+  .empty-state { padding: 60px 20px; text-align: center; color: #94a3b8; }
+  .empty-icon { font-size: 56px; opacity: 0.4; margin-bottom: 14px; }
+  .live-indicator { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; background: rgba(255,255,255,0.2); color: #fff; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #fff; animation: liveBlink 1.5s infinite; }
+  @keyframes liveBlink { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .priority-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .nav-buttons { display: flex; gap: 8px; }
+  .btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-secondary { background: rgba(255,255,255,0.2); color: #fff; border: 1px solid rgba(255,255,255,0.3); }
+  .btn-secondary:hover { background: rgba(255,255,255,0.3); }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  .modal { background: #fff; border-radius: 14px; width: 92%; max-width: 520px; max-height: 85vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+  .modal-header { padding: 16px 20px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center; }
+  .modal-body { padding: 20px; overflow-y: auto; }
+  .modal-footer { padding: 14px 20px; border-top: 1px solid #f1f5f9; display: flex; gap: 10px; justify-content: flex-end; }
+  .close-btn { background: none; border: none; font-size: 22px; cursor: pointer; color: #94a3b8; padding: 0 6px; line-height: 1; }
+  .form-label { display: block; font-size: 12px; font-weight: 500; color: #64748b; margin-bottom: 5px; margin-top: 10px; }
+  .form-input, .form-textarea, .form-select { width: 100%; padding: 9px 11px; border: 2px solid #e2e8f0; border-radius: 7px; font-size: 13px; box-sizing: border-box; font-family: inherit; }
+  .form-input:focus, .form-textarea:focus, .form-select:focus { outline: none; border-color: #3b82f6; }
+  .tabs { display: flex; gap: 6px; }
+  .tab-btn { padding: 7px 16px; border-radius: 8px; background: #f1f5f9; border: none; cursor: pointer; font-size: 13px; font-weight: 500; color: #64748b; }
+  .tab-btn.active { background: #3b82f6; color: #fff; }
+  .instance-list { padding: 0; }
+  .instance-item { padding: 14px 18px; border-bottom: 1px solid #f8fafc; display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; transition: background 0.15s; }
+  .instance-item:hover { background: #f8fafc; }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <div class="container">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div>
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:6px;">
+          <a href="/approval" class="btn btn-secondary">← 返回审批中心</a>
+          <span class="live-indicator"><span class="live-dot"></span>实时刷新</span>
+        </div>
+        <h1 style="margin:0; font-size:22px;">✅ 我的待办审批</h1>
+      </div>
+      <div class="user-selector">
+        <span style="font-size:12px; opacity:0.9; margin-right:4px;">查看身份：</span>
+        <div id="currentUserPills"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <div class="stats-grid" id="statsGrid"></div>
+
+  <div style="margin-bottom:14px;">
+    <div class="tabs" id="mainTabs">
+      <button class="tab-btn active" data-tab="todo">🎯 待我审批</button>
+      <button class="tab-btn" data-tab="my">📤 我发起的</button>
+      <button class="tab-btn" data-tab="all">📋 全部审批</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-header">
+      <h3 class="panel-title" id="panelTitle">待办列表</h3>
+      <span style="font-size:12px; color:#64748b;" id="listCount">-</span>
+    </div>
+    <div class="panel-body" id="listBody"></div>
+  </div>
+</div>
+
+<div id="modalContainer"></div>
+
+<script src="/js/approval-common.js"></script>
+<script src="/js/approval-my-todos.js"></script>
+</body>
+</html>

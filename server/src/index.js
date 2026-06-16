@@ -125,6 +125,29 @@ const {
   verifyLogIntegrity
 } = require('./auditService');
 
+const {
+  NODE_TYPES,
+  APPROVAL_STATUS,
+  listTemplates: listApprovalTemplates,
+  getTemplateById: getApprovalTemplateById,
+  createTemplate: createApprovalTemplate,
+  updateTemplate: updateApprovalTemplate,
+  deleteTemplate: deleteApprovalTemplate,
+  validateTemplate: validateApprovalTemplate,
+  listInstances: listApprovalInstances,
+  getInstanceById: getApprovalInstanceById,
+  createInstance: createApprovalInstance,
+  startInstance: startApprovalInstance,
+  approveInstance: approveApprovalInstance,
+  rejectInstance: rejectApprovalInstance,
+  transferInstance: transferApprovalInstance,
+  listTodos: listApprovalTodos,
+  getPrecedingNodes,
+  isUserTodo
+} = require('./approvalWorkflowService');
+
+const { validateExpression } = require('./approvalExpressionParser');
+
 const app = express();
 const server = http.createServer(app);
 const wsService = new WsService(server);
@@ -1972,6 +1995,283 @@ app.get('/api/audit-logs/verify', (req, res) => {
   }
 });
 
+// ============ 审批工作流 API ============
+
+app.post('/api/approval/validate-expression', (req, res) => {
+  try {
+    const { expression, context } = req.body;
+    if (expression === undefined) {
+      return res.status(400).json({ error: '缺少表达式参数' });
+    }
+    const result = validateExpression(expression);
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/approval/templates', (req, res) => {
+  try {
+    const templates = listApprovalTemplates();
+    res.json(templates);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/approval/templates/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const tpl = getApprovalTemplateById(id);
+    if (!tpl) {
+      return res.status(404).json({ error: '模板不存在' });
+    }
+    res.json(tpl);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/approval/templates', (req, res) => {
+  try {
+    const { name, description, nodes, edges, layout } = req.body;
+    if (!name) {
+      return res.status(400).json({ error: '缺少模板名称' });
+    }
+    const result = createApprovalTemplate({
+      name,
+      description,
+      nodes,
+      edges,
+      layout,
+      created_by: req.currentUser.id
+    });
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.status(201).json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/approval/templates/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { name, description, nodes, edges, layout } = req.body;
+    const result = updateApprovalTemplate(id, { name, description, nodes, edges, layout });
+    if (result === null) {
+      return res.status(404).json({ error: '模板不存在' });
+    }
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/approval/templates/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const result = deleteApprovalTemplate(id);
+    if (result === false) {
+      return res.status(404).json({ error: '模板不存在' });
+    }
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/approval/templates/:id/preceding-nodes/:nodeId', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const nodeId = req.params.nodeId;
+    const tpl = getApprovalTemplateById(id);
+    if (!tpl) {
+      return res.status(404).json({ error: '模板不存在' });
+    }
+    const precedings = getPrecedingNodes(tpl, nodeId);
+    const startNode = tpl.nodes.find(n => n.type === NODE_TYPES.START);
+    res.json({
+      start_node: startNode,
+      preceding_nodes: precedings,
+      all_options: startNode ? [startNode, ...precedings] : precedings
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/approval/instances', (req, res) => {
+  try {
+    const { status, template_id, created_by, my_todo_only } = req.query;
+    const options = {
+      status: status || null,
+      templateId: template_id ? parseInt(template_id) : null,
+      createdBy: created_by || null
+    };
+    if (my_todo_only === 'true' || my_todo_only === true) {
+      options.userId = req.currentUser.id;
+    }
+    const instances = listApprovalInstances(options);
+    res.json(instances);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/approval/instances/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const inst = getApprovalInstanceById(id);
+    if (!inst) {
+      return res.status(404).json({ error: '审批实例不存在' });
+    }
+    const userId = req.currentUser.id;
+    const isTodo = isUserTodo(inst, userId);
+    res.json({
+      ...inst,
+      current_user_is_todo: isTodo
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/approval/instances', (req, res) => {
+  try {
+    const { template_id, document_id, document_title, metadata } = req.body;
+    if (!template_id) {
+      return res.status(400).json({ error: '缺少模板ID' });
+    }
+    const result = createApprovalInstance({
+      templateId: parseInt(template_id),
+      documentId: document_id ? parseInt(document_id) : null,
+      documentTitle: document_title || '',
+      metadata: metadata || {},
+      createdBy: req.currentUser.id,
+      createdByName: req.currentUser.name
+    });
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    res.status(201).json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/approval/instances/:id/start', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const result = startApprovalInstance(id, {
+      userId: req.currentUser.id,
+      userName: req.currentUser.name
+    });
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    wsService.notifyApprovalUpdate(id, 'approval_started');
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/approval/instances/:id/approve/:nodeId', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const nodeId = req.params.nodeId;
+    const { comment } = req.body;
+    if (!req.currentUser.id) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    const result = approveApprovalInstance(id, nodeId, {
+      userId: req.currentUser.id,
+      userName: req.currentUser.name,
+      comment: comment || ''
+    });
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    wsService.notifyApprovalUpdate(id, 'approval_approved');
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/approval/instances/:id/reject/:nodeId', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const nodeId = req.params.nodeId;
+    const { comment, target_node_id } = req.body;
+    if (!req.currentUser.id) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    const result = rejectApprovalInstance(id, nodeId, {
+      userId: req.currentUser.id,
+      userName: req.currentUser.name,
+      comment: comment || '',
+      targetNodeId: target_node_id || null
+    });
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    wsService.notifyApprovalUpdate(id, 'approval_rejected');
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/approval/instances/:id/transfer/:nodeId', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const nodeId = req.params.nodeId;
+    const { to_user_id, to_user_name, comment } = req.body;
+    if (!req.currentUser.id) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    if (!to_user_id) {
+      return res.status(400).json({ error: '缺少转交给的用户ID' });
+    }
+    const result = transferApprovalInstance(id, nodeId, {
+      userId: req.currentUser.id,
+      userName: req.currentUser.name,
+      toUserId: to_user_id,
+      toUserName: to_user_name || to_user_id,
+      comment: comment || ''
+    });
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    wsService.notifyApprovalUpdate(id, 'approval_transferred');
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/approval/todos', (req, res) => {
+  try {
+    const userId = req.currentUser.id;
+    if (!userId) {
+      return res.json([]);
+    }
+    const todos = listApprovalTodos(userId);
+    res.json(todos);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/current-user', (req, res) => {
   res.json({
     user_id: req.currentUser.id,
@@ -2023,6 +2323,26 @@ app.get('/translate/:mirrorId', (req, res) => {
 
 app.get('/workload/:documentId', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'translation-workload.html'));
+});
+
+app.get('/approval', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'approval-workflow.html'));
+});
+
+app.get('/approval/template-editor', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'approval-template-editor.html'));
+});
+
+app.get('/approval/template-editor/:id', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'approval-template-editor.html'));
+});
+
+app.get('/approval/document/:instanceId', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'approval-document.html'));
+});
+
+app.get('/approval/my-todos', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'approval-my-todos.html'));
 });
 
 seedDemoData();

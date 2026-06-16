@@ -3,6 +3,7 @@ const { getContractById, checkAndUpdateExpiredContracts } = require('./contractS
 const { getReviewById, getCommentsByReview } = require('./reviewService');
 const { listMirrorsByDocument, getMirrorById, getTranslationWorkbench } = require('./mirrorService');
 const { getDocumentById } = require('./documentService');
+const { getInstanceById, listTodos } = require('./approvalWorkflowService');
 
 class WsService {
   constructor(server) {
@@ -15,6 +16,10 @@ class WsService {
     this.clientDocumentMirrors = new Map();
     this.mirrorSubscriptions = new Map();
     this.clientMirrors = new Map();
+    this.approvalSubscriptions = new Map();
+    this.clientApprovals = new Map();
+    this.todoSubscriptions = new Map();
+    this.clientTodos = new Map();
 
     this.wss.on('connection', (ws) => {
       ws.id = Math.random().toString(36).substr(2, 9);
@@ -66,6 +71,18 @@ class WsService {
         break;
       case 'unsubscribe_mirror':
         this.unsubscribeMirror(ws, data.mirrorId);
+        break;
+      case 'subscribe_approval':
+        this.subscribeApproval(ws, data.instanceId);
+        break;
+      case 'unsubscribe_approval':
+        this.unsubscribeApproval(ws, data.instanceId);
+        break;
+      case 'subscribe_todos':
+        this.subscribeTodos(ws, data.userId);
+        break;
+      case 'unsubscribe_todos':
+        this.unsubscribeTodos(ws, data.userId);
         break;
       default:
         ws.send(JSON.stringify({ type: 'error', message: 'Unknown message type' }));
@@ -393,6 +410,111 @@ class WsService {
     }
   }
 
+  subscribeApproval(ws, instanceId) {
+    if (!this.approvalSubscriptions.has(instanceId)) {
+      this.approvalSubscriptions.set(instanceId, new Set());
+    }
+    this.approvalSubscriptions.get(instanceId).add(ws);
+
+    if (!this.clientApprovals.has(ws)) {
+      this.clientApprovals.set(ws, new Set());
+    }
+    this.clientApprovals.get(ws).add(instanceId);
+
+    const instance = getInstanceById(instanceId, { reload: false });
+    if (instance) {
+      ws.send(JSON.stringify({
+        type: 'approval_status',
+        instanceId,
+        instance
+      }));
+    } else {
+      ws.send(JSON.stringify({
+        type: 'error',
+        message: '审批实例不存在'
+      }));
+    }
+  }
+
+  unsubscribeApproval(ws, instanceId) {
+    if (this.approvalSubscriptions.has(instanceId)) {
+      this.approvalSubscriptions.get(instanceId).delete(ws);
+    }
+    if (this.clientApprovals.has(ws)) {
+      this.clientApprovals.get(ws).delete(instanceId);
+    }
+  }
+
+  notifyApprovalUpdate(instanceId, eventType = 'approval_updated') {
+    const instance = getInstanceById(instanceId, { reload: false });
+    if (!instance) return;
+
+    const message = JSON.stringify({
+      type: eventType,
+      instanceId,
+      instance
+    });
+
+    if (this.approvalSubscriptions.has(instanceId)) {
+      this.approvalSubscriptions.get(instanceId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+
+    this.broadcastTodoUpdate();
+  }
+
+  subscribeTodos(ws, userId) {
+    if (!userId) return;
+    const key = String(userId);
+    if (!this.todoSubscriptions.has(key)) {
+      this.todoSubscriptions.set(key, new Set());
+    }
+    this.todoSubscriptions.get(key).add(ws);
+
+    if (!this.clientTodos.has(ws)) {
+      this.clientTodos.set(ws, new Set());
+    }
+    this.clientTodos.get(ws).add(key);
+
+    const todos = listTodos(userId);
+    ws.send(JSON.stringify({
+      type: 'todos_status',
+      userId,
+      todos
+    }));
+  }
+
+  unsubscribeTodos(ws, userId) {
+    if (!userId) return;
+    const key = String(userId);
+    if (this.todoSubscriptions.has(key)) {
+      this.todoSubscriptions.get(key).delete(ws);
+    }
+    if (this.clientTodos.has(ws)) {
+      this.clientTodos.get(ws).delete(key);
+    }
+  }
+
+  broadcastTodoUpdate() {
+    this.todoSubscriptions.forEach((clients, userIdKey) => {
+      const userId = userIdKey;
+      const todos = listTodos(userId);
+      const message = JSON.stringify({
+        type: 'todos_updated',
+        userId,
+        todos
+      });
+      clients.forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    });
+  }
+
   cleanupClient(ws) {
     const contracts = this.clientContracts.get(ws);
     if (contracts) {
@@ -432,6 +554,26 @@ class WsService {
         }
       });
       this.clientMirrors.delete(ws);
+    }
+
+    const approvals = this.clientApprovals.get(ws);
+    if (approvals) {
+      approvals.forEach(instanceId => {
+        if (this.approvalSubscriptions.has(instanceId)) {
+          this.approvalSubscriptions.get(instanceId).delete(ws);
+        }
+      });
+      this.clientApprovals.delete(ws);
+    }
+
+    const todos = this.clientTodos.get(ws);
+    if (todos) {
+      todos.forEach(userIdKey => {
+        if (this.todoSubscriptions.has(userIdKey)) {
+          this.todoSubscriptions.get(userIdKey).delete(ws);
+        }
+      });
+      this.clientTodos.delete(ws);
     }
   }
 }

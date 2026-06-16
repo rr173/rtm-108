@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>文档审批详情</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .page-header { background: linear-gradient(135deg, #10b981 0%, #3b82f6 100%); color: #fff; padding: 22px 0; }
+  .doc-layout { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; margin-top: 18px; }
+  @media (max-width: 1100px) { .doc-layout { grid-template-columns: 1fr; } }
+  .panel { background: #fff; border-radius: 12px; border: 1px solid #f1f5f9; overflow: hidden; }
+  .panel-header { padding: 14px 18px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center; }
+  .panel-title { font-weight: 600; font-size: 15px; color: #1e293b; margin: 0; }
+  .panel-body { padding: 18px; }
+  .doc-title { font-size: 20px; font-weight: 700; color: #1e293b; margin: 0 0 10px; }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 14px; font-size: 13px; color: #64748b; }
+  .meta-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; background: #f1f5f9; border-radius: 12px; }
+  .meta-chip strong { color: #475569; font-weight: 500; }
+  .current-node-card { background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%); border: 2px solid #93c5fd; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  .current-node-card .title { font-size: 12px; color: #2563eb; font-weight: 600; text-transform: uppercase; margin-bottom: 6px; }
+  .current-node-card .name { font-size: 16px; font-weight: 700; color: #1e40af; margin-bottom: 6px; }
+  .current-node-card .approvers { font-size: 12px; color: #475569; }
+  .action-btn { flex: 1; padding: 12px 16px; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+  .action-btn.approve { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
+  .action-btn.approve:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(16,185,129,0.3); }
+  .action-btn.reject { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; }
+  .action-btn.reject:hover { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(239,68,68,0.3); }
+  .action-btn.transfer { background: #fff; color: #475569; border: 2px solid #e2e8f0; }
+  .action-btn.transfer:hover { border-color: #6366f1; color: #6366f1; }
+  .action-row { display: flex; gap: 10px; }
+  .form-input, .form-textarea, .form-select { width: 100%; padding: 9px 11px; border: 2px solid #e2e8f0; border-radius: 7px; font-size: 13px; box-sizing: border-box; font-family: inherit; }
+  .form-input:focus, .form-textarea:focus, .form-select:focus { outline: none; border-color: #3b82f6; }
+  .form-label { display: block; font-size: 12px; font-weight: 500; color: #64748b; margin-bottom: 5px; margin-top: 10px; }
+  .timeline { position: relative; padding-left: 24px; }
+  .timeline::before { content: ''; position: absolute; left: 8px; top: 4px; bottom: 4px; width: 2px; background: #e2e8f0; }
+  .timeline-item { position: relative; padding-bottom: 18px; }
+  .timeline-item::before { content: ''; position: absolute; left: -20px; top: 4px; width: 12px; height: 12px; border-radius: 50%; background: #cbd5e1; border: 2px solid #fff; box-shadow: 0 0 0 2px #e2e8f0; }
+  .timeline-item.approve::before { background: #10b981; box-shadow: 0 0 0 2px #86efac; }
+  .timeline-item.reject::before { background: #ef4444; box-shadow: 0 0 0 2px #fca5a5; }
+  .timeline-item.start::before { background: #3b82f6; box-shadow: 0 0 0 2px #93c5fd; }
+  .timeline-item.transfer::before { background: #f59e0b; box-shadow: 0 0 0 2px #fcd34d; }
+  .timeline-item.system::before { background: #8b5cf6; box-shadow: 0 0 0 2px #c4b5fd; }
+  .timeline-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: #64748b; margin-bottom: 4px; }
+  .timeline-user { font-weight: 600; color: #1e293b; }
+  .timeline-action { display: inline-block; padding: 2px 7px; border-radius: 8px; font-size: 11px; font-weight: 500; }
+  .action-approve { background: #dcfce7; color: #16a34a; }
+  .action-reject { background: #fee2e2; color: #dc2626; }
+  .action-start { background: #dbeafe; color: #2563eb; }
+  .action-transfer { background: #fef3c7; color: #d97706; }
+  .action-system { background: #ede9fe; color: #7c3aed; }
+  .timeline-content { font-size: 13px; color: #475569; line-height: 1.6; }
+  .timeline-comment { margin-top: 6px; padding: 8px 10px; background: #f8fafc; border-radius: 6px; font-size: 12px; color: #64748b; border-left: 3px solid #e2e8f0; }
+  .legend-row { display: flex; gap: 14px; margin-top: 10px; font-size: 11px; color: #64748b; flex-wrap: wrap; }
+  .legend-item { display: inline-flex; align-items: center; gap: 4px; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 3px; }
+  .modal-overlay { position: fixed; inset: 0; background: rgba(15,23,42,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  .modal { background: #fff; border-radius: 14px; width: 92%; max-width: 500px; max-height: 85vh; overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+  .modal-header { padding: 16px 20px; border-bottom: 1px solid #f1f5f9; display: flex; justify-content: space-between; align-items: center; }
+  .modal-body { padding: 20px; overflow-y: auto; }
+  .modal-footer { padding: 14px 20px; border-top: 1px solid #f1f5f9; display: flex; gap: 10px; justify-content: flex-end; }
+  .close-btn { background: none; border: none; font-size: 22px; cursor: pointer; color: #94a3b8; padding: 0 6px; line-height: 1; }
+  .btn { padding: 9px 18px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .btn-secondary { background: #f1f5f9; color: #475569; }
+  .btn-secondary:hover { background: #e2e8f0; }
+  .btn-primary { background: #3b82f6; color: #fff; }
+  .btn-primary:hover { background: #2563eb; }
+  .btn-danger { background: #ef4444; color: #fff; }
+  .btn-danger:hover { background: #dc2626; }
+  .user-pill-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .user-pill { padding: 4px 11px; background: #eef2ff; color: #4f46e5; border-radius: 14px; font-size: 12px; font-weight: 500; cursor: pointer; border: 2px solid transparent; transition: all 0.15s; }
+  .user-pill:hover { background: #c7d2fe; }
+  .user-pill.active { background: #4f46e5; color: #fff; border-color: #4338ca; }
+  .live-indicator { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; background: #dcfce7; color: #16a34a; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; animation: liveBlink 1.5s infinite; }
+  @keyframes liveBlink { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .empty-state { padding: 40px 20px; text-align: center; color: #94a3b8; font-size: 13px; }
+  .countersign-progress { margin-top: 8px; }
+  .cs-bar { height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
+  .cs-bar-fill { height: 100%; background: linear-gradient(90deg, #8b5cf6, #6366f1); transition: width 0.4s; }
+  .cs-count { font-size: 11px; color: #64748b; margin-top: 4px; }
+  .metadata-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .metadata-item { padding: 8px 10px; background: #f8fafc; border-radius: 7px; font-size: 12px; }
+  .metadata-key { color: #94a3b8; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+  .metadata-value { color: #1e293b; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <div class="container">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div>
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:6px;">
+          <a href="/approval" class="btn btn-secondary" style="background:rgba(255,255,255,0.18); border:none; color:#fff;">← 返回审批中心</a>
+          <span class="live-indicator"><span class="live-dot"></span>实时同步</span>
+        </div>
+        <h1 id="docTitle" style="margin:0; font-size:22px;">加载中...</h1>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <div class="user-selector" style="display:flex; gap:6px; align-items:center;">
+          <span style="font-size:12px; opacity:0.9;">当前身份：</span>
+          <div id="currentUserPills"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="container doc-layout">
+  <div>
+    <div class="panel" style="margin-bottom:18px;">
+      <div class="panel-header">
+        <h3 class="panel-title">📊 审批流程进度</h3>
+        <div id="statusBadge"></div>
+      </div>
+      <div class="panel-body">
+        <div class="legend-row">
+          <div class="legend-item"><div class="legend-dot" style="background:#10b981;"></div>已通过</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#3b82f6;"></div>当前节点（蓝色闪烁）</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#e2e8f0;"></div>未到达</div>
+        </div>
+        <div style="margin-top:16px;" id="flowChart"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h3 class="panel-title">📝 审批记录（时间线）</h3>
+      </div>
+      <div class="panel-body">
+        <div id="timelineWrap" style="max-height:400px; overflow-y:auto;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel" style="margin-bottom:18px;">
+      <div class="panel-header">
+        <h3 class="panel-title">📋 文档信息</h3>
+      </div>
+      <div class="panel-body">
+        <h2 class="doc-title" id="panelDocTitle"></h2>
+        <div class="meta-row">
+          <span class="meta-chip">🏷 <strong id="tplName">-</strong></span>
+          <span class="meta-chip">👤 发起人: <strong id="creatorName">-</strong></span>
+          <span class="meta-chip">🕐 创建于: <strong id="createTime">-</strong></span>
+          <span class="meta-chip">🔄 更新于: <strong id="updateTime">-</strong></span>
+        </div>
+        <div style="margin-top: 12px;">
+          <div class="form-label">文档元数据</div>
+          <div class="metadata-grid" id="metadataGrid"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:18px;" id="actionPanel">
+      <div class="panel-header">
+        <h3 class="panel-title">⚡ 审批操作</h3>
+      </div>
+      <div class="panel-body" id="actionPanelBody"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h3 class="panel-title">💡 快捷操作</h3>
+      </div>
+      <div class="panel-body" style="display:flex; flex-direction:column; gap:8px;">
+        <button class="btn btn-secondary" style="width:100%; text-align:left;" onclick="location.href='/approval'">🏠 返回审批中心</button>
+        <button class="btn btn-secondary" style="width:100%; text-align:left;" onclick="location.href='/approval/my-todos'">✅ 查看我的待办</button>
+        <button class="btn btn-secondary" style="width:100%; text-align:left;" onclick="location.href='/approval/template-editor'">📐 编辑流程模板</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="modalContainer"></div>
+
+<script src="/js/approval-common.js"></script>
+<script src="/js/approval-svg-renderer.js"></script>
+<script src="/js/approval-document.js"></script>
+</body>
+</html>
