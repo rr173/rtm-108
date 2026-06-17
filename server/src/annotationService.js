@@ -144,6 +144,17 @@ function detectConflicts(documentId) {
   const docAnnotations = data.annotations
     .filter(a => a.document_id === parseInt(documentId))
     .sort((a, b) => a.start_offset - b.start_offset);
+  const docAnnotationIds = new Set(docAnnotations.map(a => a.id));
+
+  const invalidConflicts = conflictData.conflicts.filter(c =>
+    c.document_id === parseInt(documentId) &&
+    c.status === CONFLICT_STATUS.PENDING &&
+    !c.annotation_ids.every(id => docAnnotationIds.has(id))
+  );
+  if (invalidConflicts.length > 0) {
+    conflictData.conflicts = conflictData.conflicts.filter(c => !invalidConflicts.includes(c));
+    saveConflictData();
+  }
 
   const existingConflictPairs = new Set();
   conflictData.conflicts.forEach(c => {
@@ -439,20 +450,44 @@ function listConflictsByDocument(documentId, { status = null } = {}) {
   loadConflictData();
   loadData();
 
+  const docAnnotations = data.annotations.filter(a => a.document_id === parseInt(documentId));
+  const docAnnotationIds = new Set(docAnnotations.map(a => a.id));
+
+  const invalidConflicts = conflictData.conflicts.filter(c =>
+    c.document_id === parseInt(documentId) &&
+    c.status === CONFLICT_STATUS.PENDING &&
+    !c.annotation_ids.every(id => docAnnotationIds.has(id))
+  );
+  let needSave = false;
+  if (invalidConflicts.length > 0) {
+    conflictData.conflicts = conflictData.conflicts.filter(c => !invalidConflicts.includes(c));
+    needSave = true;
+  }
+
   let conflicts = conflictData.conflicts.filter(c => c.document_id === parseInt(documentId));
 
   if (status) {
     conflicts = conflicts.filter(c => c.status === status);
   }
 
-  return conflicts.map(c => enrichConflict(c));
+  const enrichedConflicts = conflicts
+    .map(c => enrichConflict(c))
+    .filter(c => c.annotations && c.annotations.length >= 2);
+
+  if (needSave) {
+    saveConflictData();
+  }
+
+  return enrichedConflicts;
 }
 
 function getConflictById(id) {
   loadConflictData();
   loadData();
   const conflict = conflictData.conflicts.find(c => c.id === parseInt(id));
-  return conflict ? enrichConflict(conflict) : null;
+  if (!conflict) return null;
+  const enriched = enrichConflict(conflict);
+  return enriched.annotations && enriched.annotations.length >= 2 ? enriched : null;
 }
 
 function getConflictingAnnotationIds(documentId) {

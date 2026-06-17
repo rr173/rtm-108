@@ -320,9 +320,15 @@ class DocumentReader {
       const relResponse = await this.apiFetch(`/api/documents/${this.documentId}/relations`);
       this.relations = await relResponse.json();
 
+      const kgResponse = await this.apiFetch(`/api/documents/${this.documentId}/knowledge-graph`);
+      const kgData = await kgResponse.json();
+      this.conflicts = kgData.conflicts || [];
+      this.conflictingAnnotationIds = new Set(kgData.conflicting_annotation_ids || []);
+
       this.updateAnnotationList();
       this.renderHighlights();
       this.updateStats();
+      this.updateConflictUI();
 
       if (this.pendingAnnotationId) {
         setTimeout(() => {
@@ -921,7 +927,7 @@ class DocumentReader {
               </div>
 
               <div class="resolution-actions">
-                <button class="resolution-btn" onclick="reader.resolveConflict(${conflict.id}, ${annotations[0].id}, ${annotations[1].id})">
+                <button class="resolution-btn" data-conflict-id="${conflict.id}" data-ann1="${annotations[0].id}" data-ann2="${annotations[1].id}">
                   裁决
                 </button>
               </div>
@@ -936,7 +942,7 @@ class DocumentReader {
     }).join('');
 
     pendingConflicts.forEach(conflict => {
-      const radios = document.querySelectorAll(`input[name="resolution_${conflict.id}"]`);
+      const radios = document.querySelectorAll(`input[type="radio"][name="resolution_${conflict.id}"]`);
       radios.forEach(radio => {
         radio.addEventListener('change', (e) => {
           this.selectedResolution.set(conflict.id, e.target.value);
@@ -946,6 +952,17 @@ class DocumentReader {
           }
         });
       });
+
+      const resolveBtn = document.querySelector(`.resolution-btn[data-conflict-id="${conflict.id}"]`);
+      if (resolveBtn) {
+        resolveBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const ann1Id = parseInt(resolveBtn.dataset.ann1);
+          const ann2Id = parseInt(resolveBtn.dataset.ann2);
+          this.resolveConflict(conflict.id, ann1Id, ann2Id);
+        });
+      }
     });
   }
 

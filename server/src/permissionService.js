@@ -182,20 +182,23 @@ function removeCollaborator(documentId, userId, removedBy) {
 }
 
 function checkPermission(documentId, userId, requiredRole, isPublic) {
-  if (isPublic && requiredRole === ROLES.VIEWER) {
-    return { allowed: true, role: isPublic ? 'public' : null };
-  }
   if (!userId) {
+    if (isPublic && requiredRole === ROLES.VIEWER) {
+      return { allowed: true, role: 'public' };
+    }
     return { allowed: false, role: null, reason: '需要登录' };
   }
   const userRole = getUserRoleForDocument(documentId, userId);
-  if (!userRole) {
-    return { allowed: false, role: null, reason: '未被授权访问此文档' };
+  if (userRole) {
+    if (!hasAtLeastRole(userRole, requiredRole)) {
+      return { allowed: false, role: userRole, reason: `需要 ${requiredRole} 以上权限` };
+    }
+    return { allowed: true, role: userRole };
   }
-  if (!hasAtLeastRole(userRole, requiredRole)) {
-    return { allowed: false, role: userRole, reason: `需要 ${requiredRole} 以上权限` };
+  if (isPublic && requiredRole === ROLES.VIEWER) {
+    return { allowed: true, role: 'public' };
   }
-  return { allowed: true, role: userRole };
+  return { allowed: false, role: null, reason: '未被授权访问此文档' };
 }
 
 function getPermissionDetailsForDocument(documentId) {
