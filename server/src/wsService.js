@@ -5,6 +5,7 @@ const { listMirrorsByDocument, getMirrorById, getTranslationWorkbench } = requir
 const { getDocumentById } = require('./documentService');
 const { getInstanceById, listTodos } = require('./approvalWorkflowService');
 const { getKnowledgeGraph, listConflictsByDocument, getConflictingAnnotationIds } = require('./annotationService');
+const { getDocumentReadingStats, getActiveReaders, getDocumentHeatmap } = require('./readingService');
 
 class WsService {
   constructor(server) {
@@ -23,6 +24,8 @@ class WsService {
     this.clientTodos = new Map();
     this.annotationSubscriptions = new Map();
     this.clientAnnotations = new Map();
+    this.readingSubscriptions = new Map();
+    this.clientReadings = new Map();
 
     this.wss.on('connection', (ws) => {
       ws.id = Math.random().toString(36).substr(2, 9);
@@ -92,6 +95,12 @@ class WsService {
         break;
       case 'unsubscribe_annotations':
         this.unsubscribeAnnotations(ws, data.documentId);
+        break;
+      case 'subscribe_reading':
+        this.subscribeReading(ws, data.documentId);
+        break;
+      case 'unsubscribe_reading':
+        this.unsubscribeReading(ws, data.documentId);
         break;
       default:
         ws.send(JSON.stringify({ type: 'error', message: 'Unknown message type' }));
@@ -638,6 +647,64 @@ class WsService {
     }
   }
 
+  subscribeReading(ws, documentId) {
+    const docId = parseInt(documentId);
+    if (!this.readingSubscriptions.has(docId)) {
+      this.readingSubscriptions.set(docId, new Set());
+    }
+    this.readingSubscriptions.get(docId).add(ws);
+
+    if (!this.clientReadings.has(ws)) {
+      this.clientReadings.set(ws, new Set());
+    }
+    this.clientReadings.get(ws).add(docId);
+
+    const stats = getDocumentReadingStats(docId);
+    const activeReaders = getActiveReaders(docId);
+    const heatmap = getDocumentHeatmap(docId);
+    
+    ws.send(JSON.stringify({
+      type: 'reading_status',
+      documentId: docId,
+      stats,
+      active_readers: activeReaders,
+      heatmap
+    }));
+  }
+
+  unsubscribeReading(ws, documentId) {
+    const docId = parseInt(documentId);
+    if (this.readingSubscriptions.has(docId)) {
+      this.readingSubscriptions.get(docId).delete(ws);
+    }
+    if (this.clientReadings.has(ws)) {
+      this.clientReadings.get(ws).delete(docId);
+    }
+  }
+
+  notifyReadingUpdate(documentId) {
+    const docId = parseInt(documentId);
+    const stats = getDocumentReadingStats(docId);
+    const activeReaders = getActiveReaders(docId);
+    const heatmap = getDocumentHeatmap(docId);
+    
+    const message = JSON.stringify({
+      type: 'reading_updated',
+      documentId: docId,
+      stats,
+      active_readers: activeReaders,
+      heatmap
+    });
+
+    if (this.readingSubscriptions.has(docId)) {
+      this.readingSubscriptions.get(docId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+  }
+
   cleanupClient(ws) {
     const contracts = this.clientContracts.get(ws);
     if (contracts) {
@@ -707,6 +774,16 @@ class WsService {
         }
       });
       this.clientAnnotations.delete(ws);
+    }
+
+    const readings = this.clientReadings.get(ws);
+    if (readings) {
+      readings.forEach(documentId => {
+        if (this.readingSubscriptions.has(documentId)) {
+          this.readingSubscriptions.get(documentId).delete(ws);
+        }
+      });
+      this.clientReadings.delete(ws);
     }
   }
 }

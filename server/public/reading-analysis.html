@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>阅读分析 - 文档智能摘要系统</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/reading-analysis.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="header-left">
+        <h1 class="app-title">📊 阅读分析</h1>
+        <span id="documentTitle" class="document-title">加载中...</span>
+      </div>
+      <div class="header-right">
+        <button id="backBtn" class="btn btn-secondary">← 返回列表</button>
+        <button id="viewDocBtn" class="btn btn-primary">📄 查看文档</button>
+        <div class="connection-status" id="connectionStatus">
+          <span class="status-dot"></span>
+          <span class="status-text">连接中...</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="main-content reading-layout">
+      <main class="document-panel">
+        <div class="panel-header">
+          <h2>📖 文档全文（热力图）</h2>
+          <div class="heatmap-legend">
+            <span class="legend-label">冷区</span>
+            <div class="legend-bar"></div>
+            <span class="legend-label">热区</span>
+          </div>
+        </div>
+        <div id="documentContent" class="document-content heatmap-content">
+          <div class="loading">加载文档内容中...</div>
+        </div>
+        <div id="activeReadersBar" class="active-readers-bar">
+          <span class="readers-label">👥 当前在线读者：</span>
+          <span id="activeReadersCount" class="readers-count">0</span>
+          <span id="activeReadersList" class="readers-list"></span>
+        </div>
+      </main>
+
+      <aside class="analysis-panel">
+        <div class="panel-section">
+          <div class="section-header">
+            <h3>📝 智能摘要</h3>
+            <button id="refreshSummaryBtn" class="btn btn-sm btn-secondary">刷新</button>
+          </div>
+          <div class="summary-tabs">
+            <button class="tab-btn active" data-tab="overall">整篇摘要</button>
+            <button class="tab-btn" data-tab="sections">章节摘要</button>
+            <button class="tab-btn" data-tab="paragraphs">段落关键句</button>
+          </div>
+          <div id="summaryContent" class="summary-content">
+            <div class="loading">生成摘要中...</div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <div class="section-header">
+            <h3>📈 阅读统计</h3>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-icon">👥</div>
+              <div class="stat-info">
+                <div class="stat-value" id="totalReaders">0</div>
+                <div class="stat-label">总阅读人数</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon">⏱️</div>
+              <div class="stat-info">
+                <div class="stat-value" id="avgReadingTime">0</div>
+                <div class="stat-label">平均阅读时长(分钟)</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon">✅</div>
+              <div class="stat-info">
+                <div class="stat-value" id="completionRate">0%</div>
+                <div class="stat-label">完读率</div>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-icon">📊</div>
+              <div class="stat-info">
+                <div class="stat-value" id="totalSessions">0</div>
+                <div class="stat-label">总阅读次数</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <div class="section-header">
+            <h3>🎯 我的阅读目标</h3>
+          </div>
+          <div class="goal-section">
+            <div class="goal-input">
+              <label>每日目标（字）</label>
+              <div class="goal-input-row">
+                <input type="number" id="dailyGoalInput" class="form-control" value="2000" min="100">
+                <button id="setGoalBtn" class="btn btn-primary btn-sm">设置</button>
+              </div>
+            </div>
+            <div class="goal-progress">
+              <div class="progress-bar-container">
+                <div id="goalProgressBar" class="progress-bar" style="width: 0%"></div>
+              </div>
+              <div class="progress-info">
+                <span id="wordsReadToday">0</span> / <span id="dailyGoal">2000</span> 字
+              </div>
+              <div class="progress-extra">
+                <span id="streakDays">🔥 连续 0 天</span>
+                <span id="estimatedTime">⏳ 预计剩余 0 分钟</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <div class="section-header">
+            <h3>📊 各段落停留分布</h3>
+          </div>
+          <div id="paragraphChart" class="paragraph-chart">
+            <div class="loading">加载数据中...</div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/js/reading-analysis.js"></script>
+</body>
+</html>

@@ -25,6 +25,15 @@ const {
   getKnowledgeGraph
 } = require('./annotationService');
 
+const {
+  setHeatmapData,
+  startReadingSession,
+  endReadingSession,
+  updateReadingProgressForGoal,
+  getDocumentReadingStats,
+  updateReadingProgress
+} = require('./readingService');
+
 function seedDemoData() {
   const existingContracts = listContracts();
   if (existingContracts.length === 0) {
@@ -101,6 +110,7 @@ function seedDemoData() {
   seedDocumentData();
   seedTemplateData();
   seedKnowledgeGraphData();
+  seedReadingAnalysisData();
 
   console.log('演示数据初始化完成');
 }
@@ -1307,6 +1317,200 @@ function seedKnowledgeGraphData() {
   console.log('  12. 裁决前冲突标注不参与知识图谱关系建立');
 
   console.log('\n✅ 知识图谱演示数据初始化完成！');
+}
+
+function seedReadingAnalysisData() {
+  console.log('\n========== 初始化阅读分析演示数据 ==========');
+
+  const existingDocs = listDocuments();
+  let analysisDoc = existingDocs.find(d => d.title === '人工智能发展白皮书');
+
+  if (!analysisDoc) {
+    const docContent = `人工智能发展白皮书
+
+第一章 人工智能概述
+
+人工智能（Artificial Intelligence，简称AI）是计算机科学的一个重要分支，旨在研究、开发用于模拟、延伸和扩展人类智能的理论、方法、技术及应用系统。人工智能的研究领域包括机器学习、深度学习、自然语言处理、计算机视觉、专家系统等多个方向。
+
+人工智能的发展历程可以追溯到20世纪50年代。1956年，在达特茅斯学院举行的一次研讨会上，约翰·麦卡锡首次提出了"人工智能"这一概念，标志着人工智能作为一门学科正式诞生。此后，人工智能经历了数次兴衰起伏，从最初的符号主义到连接主义，再到如今的深度学习革命，每一次技术突破都推动着人工智能向前发展。
+
+近年来，随着计算能力的提升和大数据的普及，人工智能技术取得了突破性进展。特别是深度学习技术的成熟，使得计算机在图像识别、语音识别、自然语言处理等领域的表现接近甚至超越了人类水平。人工智能已经从实验室走向实际应用，深刻改变着我们的生活方式和工作模式。
+
+第二章 人工智能核心技术
+
+机器学习是人工智能的核心技术之一，它使计算机能够通过数据和经验自动改进性能，而无需进行明确的编程。机器学习的基本思想是让计算机从数据中学习规律，并利用这些规律对未知数据进行预测或决策。
+
+深度学习是机器学习的一个分支，它基于人工神经网络，特别是多层神经网络。深度学习的核心优势在于能够自动从原始数据中学习特征表示，而不需要人工设计特征。这种端到端的学习方式大大降低了特征工程的难度，使得复杂任务的解决成为可能。
+
+自然语言处理（NLP）是人工智能的重要研究方向，旨在让计算机理解、解释和生成人类语言。自然语言处理技术包括分词、词性标注、句法分析、语义理解、机器翻译、文本摘要等多个子任务。近年来，随着预训练语言模型的出现，自然语言处理技术取得了重大突破。
+
+计算机视觉是另一个重要的人工智能领域，研究如何让计算机"看"懂图像和视频。计算机视觉的应用包括图像识别、目标检测、人脸识别、自动驾驶、医学影像分析等。卷积神经网络（CNN）是计算机视觉领域最常用的深度学习模型。
+
+第三章 人工智能应用场景
+
+在医疗健康领域，人工智能正在发挥越来越重要的作用。AI辅助诊断系统可以帮助医生更快速、更准确地识别疾病，提高诊断效率和准确率。AI药物研发可以大大缩短新药开发周期，降低研发成本。此外，人工智能还可以用于健康管理、个性化治疗等方面。
+
+在教育领域，人工智能为个性化教育提供了可能。智能教学系统可以根据每个学生的学习情况和特点，定制个性化的学习路径和内容。AI辅导老师可以24小时在线解答学生的问题，提供即时反馈。智能批改系统可以自动批改作业和试卷，减轻教师的工作负担。
+
+在金融领域，人工智能被广泛应用于风险控制、 fraud检测、量化交易、客户服务等方面。AI风控系统可以实时监测交易行为，识别异常交易，降低金融风险。智能投顾可以根据用户的风险偏好和投资目标，提供个性化的投资建议。
+
+在交通领域，人工智能推动着智能交通系统的发展。自动驾驶技术有望大幅降低交通事故率，提高交通效率。智能交通信号系统可以根据实时交通流量动态调整信号灯配时，缓解交通拥堵。物流配送中的路径优化算法可以提高配送效率，降低物流成本。
+
+第四章 人工智能发展趋势
+
+大模型技术是当前人工智能发展的重要方向。以GPT系列为代表的大型语言模型展现出了强大的语言理解和生成能力。未来，大模型将朝着更大规模、更强能力、更高效率的方向发展。多模态大模型将能够同时处理文本、图像、音频等多种类型的数据。
+
+边缘人工智能是另一个重要趋势。随着物联网设备的普及，越来越多的计算需要在边缘设备上进行。边缘AI可以降低数据传输延迟，保护用户隐私，提高系统响应速度。轻量级模型设计和模型压缩技术将是边缘AI发展的关键。
+
+AI安全与伦理问题越来越受到重视。随着AI技术的广泛应用，如何确保AI系统的安全性、公平性和可解释性成为重要的研究课题。AI伦理框架的建立、AI监管政策的完善、AI安全技术的发展，将是未来AI健康发展的重要保障。
+
+人机协作是未来人工智能发展的重要方向。人工智能不会完全取代人类，而是与人类形成互补。人类负责创造性思维、价值判断和复杂决策，AI负责数据处理、模式识别和重复性工作。人机协作将大大提升工作效率，创造更多的可能性。
+
+第五章 结语
+
+人工智能正以前所未有的速度发展，深刻改变着我们的世界。从日常生活到工业生产，从医疗健康到教育培训，人工智能的应用场景越来越广泛。我们既要看到AI技术带来的巨大机遇，也要重视其可能带来的挑战和风险。
+
+面对人工智能的快速发展，我们应该保持开放包容的态度，积极拥抱技术变革，同时也要建立健全的治理体系，确保AI技术发展造福人类社会。相信在不久的将来，人工智能将与人类携手，共同创造更美好的未来。`;
+
+    analysisDoc = createDocument({
+      title: '人工智能发展白皮书',
+      content: docContent,
+      description: '用于阅读分析功能演示的文档，包含完整的章节结构和丰富内容',
+      is_public: true
+    });
+
+    console.log('✅ 阅读分析演示文档已创建，ID:', analysisDoc.id);
+    console.log('   文档标题：', analysisDoc.title);
+
+    setOwner(analysisDoc.id, 'user-admin');
+    addCollaborator(analysisDoc.id, 'user-editor', 'editor', 'system-init');
+    addCollaborator(analysisDoc.id, 'user-viewer', 'viewer', 'system-init');
+    console.log('   ✅ 权限配置完成');
+  } else {
+    console.log('已存在阅读分析演示文档，跳过文档创建');
+  }
+
+  const docId = analysisDoc.id;
+  
+  const { getDocumentHeatmap } = require('./readingService');
+  const existingHeatmap = getDocumentHeatmap(docId);
+  
+  if (existingHeatmap.length > 0) {
+    console.log('已存在热力图数据，跳过初始化');
+    return;
+  }
+
+  console.log('\n生成5个模拟用户的阅读数据...');
+
+  const demoUsers = [
+    { id: 'user-alice', name: 'Alice（产品经理）' },
+    { id: 'user-bob', name: 'Bob（工程师）' },
+    { id: 'user-carol', name: 'Carol（设计师）' },
+    { id: 'user-david', name: 'David（研究员）' },
+    { id: 'user-eve', name: 'Eve（学生）' }
+  ];
+
+  const paragraphs = analysisDoc.versions[analysisDoc.versions.length - 1].content
+    .split(/\n\s*\n/)
+    .filter(p => p.trim());
+  
+  const totalParagraphs = paragraphs.length;
+  console.log(`   文档共 ${totalParagraphs} 个段落`);
+
+  const heatmapData = [];
+
+  for (let i = 0; i < totalParagraphs; i++) {
+    let baseDwellTime = 30000 + Math.random() * 60000;
+    
+    if (i < 3) {
+      baseDwellTime *= 1.5;
+    }
+    
+    if (i >= 5 && i <= 8) {
+      baseDwellTime *= 1.8;
+    }
+    
+    if (i >= 15 && i <= 18) {
+      baseDwellTime *= 2.0;
+    }
+    
+    if (i === totalParagraphs - 1 || i === totalParagraphs - 2) {
+      baseDwellTime *= 1.3;
+    }
+
+    const readCount = Math.floor(3 + Math.random() * 3);
+    const uniqueReaderCount = Math.floor(2 + Math.random() * 4);
+
+    heatmapData.push({
+      paragraph_index: i,
+      total_dwell_time: Math.floor(baseDwellTime * readCount),
+      read_count: readCount,
+      unique_readers: []
+    });
+  }
+
+  demoUsers.forEach((user, userIdx) => {
+    const paragraphsRead = Math.floor(totalParagraphs * (0.5 + Math.random() * 0.5));
+    for (let i = 0; i < paragraphsRead && i < totalParagraphs; i++) {
+      if (heatmapData[i] && !heatmapData[i].unique_readers.includes(user.id)) {
+        heatmapData[i].unique_readers.push(user.id);
+      }
+    }
+  });
+
+  setHeatmapData(docId, heatmapData);
+  console.log(`   ✅ 已生成 ${heatmapData.length} 个段落的热力图数据`);
+
+  console.log('\n模拟5个用户的阅读会话...');
+  demoUsers.forEach((user, idx) => {
+    const session = startReadingSession({
+      documentId: docId,
+      userId: user.id,
+      userName: user.name
+    });
+
+    if (session) {
+      const readParagraphs = Math.floor(totalParagraphs * (0.4 + idx * 0.12));
+      for (let i = 0; i < readParagraphs; i++) {
+        updateReadingProgress({
+          documentId: docId,
+          userId: user.id,
+          paragraphIndex: i
+        });
+      }
+
+      endReadingSession({
+        documentId: docId,
+        userId: user.id
+      });
+
+      const wordsRead = Math.floor(500 + idx * 400 + Math.random() * 500);
+      updateReadingProgressForGoal(user.id, wordsRead);
+    }
+  });
+
+  console.log('   ✅ 5个模拟用户阅读会话已创建');
+
+  console.log('\n📊 阅读分析演示数据统计：');
+  const stats = getDocumentReadingStats(docId);
+  console.log(`   - 总阅读人数：${stats.total_readers}`);
+  console.log(`   - 总阅读次数：${stats.total_sessions}`);
+  console.log(`   - 平均阅读时长：${stats.avg_reading_time_minutes.toFixed(1)} 分钟`);
+  console.log(`   - 完读率：${Math.round(stats.completion_rate * 100)}%`);
+  console.log(`   - 热力图段落数：${stats.heatmap.length}`);
+
+  console.log('\n🎯 阅读分析功能演示说明：');
+  console.log('   1. 阅读分析页 → http://localhost:3000/reading-analysis/' + docId);
+  console.log('   2. 左侧展示带热力背景的文档全文');
+  console.log('   3. 右侧展示自动摘要和阅读统计面板');
+  console.log('   4. 摘要支持3种视图：整篇摘要、章节摘要、段落关键句');
+  console.log('   5. 统计面板包含：总阅读人数、平均阅读时长、完读率、总阅读次数');
+  console.log('   6. 各段落停留分布柱状图直观展示阅读热点');
+  console.log('   7. 可设定每日阅读目标，查看进度和预计剩余时间');
+  console.log('   8. 多人同时阅读时通过WebSocket实时更新热力图');
+  console.log('   9. 底部显示当前在线读者列表');
+
+  console.log('\n✅ 阅读分析演示数据初始化完成！');
 }
 
 module.exports = seedDemoData;

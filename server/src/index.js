@@ -175,6 +175,27 @@ const {
   getConflictingAnnotationIds
 } = require('./annotationService');
 
+const {
+  generateDocumentSummary,
+  getDocumentSummary,
+  saveDocumentSummary
+} = require('./summaryEngine');
+
+const {
+  startReadingSession,
+  updateReadingProgress,
+  recordParagraphDwellTime,
+  endReadingSession,
+  getDocumentHeatmap,
+  getActiveReaders,
+  getDocumentReadingStats,
+  getReadingGoal,
+  setReadingGoal,
+  updateReadingProgressForGoal,
+  getReadingProgress,
+  getUserReadingHistory
+} = require('./readingService');
+
 const app = express();
 const server = http.createServer(app);
 const wsService = new WsService(server);
@@ -2798,6 +2819,230 @@ app.get(
   }
 );
 
+// ============ 摘要 API ============
+
+app.get(
+  '/api/documents/:id/summary',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const doc = req._document;
+      const forceRegenerate = req.query.force === 'true';
+      const summaryRatio = req.query.ratio ? parseFloat(req.query.ratio) : undefined;
+      
+      const latestVersion = doc.versions && doc.versions.length > 0 
+        ? doc.versions[doc.versions.length - 1] 
+        : null;
+      
+      if (!latestVersion) {
+        return res.status(404).json({ error: '文档没有内容' });
+      }
+      
+      const versionNumber = latestVersion.version_number;
+      let summary = getDocumentSummary(docId, versionNumber);
+      
+      if (!summary || forceRegenerate) {
+        const content = latestVersion.content;
+        summary = generateDocumentSummary(content, { summaryRatio });
+        saveDocumentSummary(docId, versionNumber, summary);
+      }
+      
+      res.json(summary);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ============ 阅读分析 API ============
+
+app.post(
+  '/api/documents/:id/reading/start',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const userId = req.currentUser.id;
+      const userName = req.currentUser.name;
+      
+      const session = startReadingSession({
+        documentId: docId,
+        userId,
+        userName
+      });
+      
+      wsService.notifyReadingUpdate(docId);
+      
+      res.status(201).json(session);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents/:id/reading/progress',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const userId = req.currentUser.id;
+      const { paragraph_index, scroll_position, dwell_time_ms } = req.body;
+      
+      const session = updateReadingProgress({
+        documentId: docId,
+        userId,
+        paragraphIndex: paragraph_index !== undefined ? parseInt(paragraph_index) : 0,
+        scrollPosition: scroll_position || 0
+      });
+      
+      if (dwell_time_ms && paragraph_index !== undefined) {
+        recordParagraphDwellTime({
+          documentId: docId,
+          paragraphIndex: parseInt(paragraph_index),
+          durationMs: parseInt(dwell_time_ms),
+          userId
+        });
+      }
+      
+      wsService.notifyReadingUpdate(docId);
+      
+      res.json(session || { success: false });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents/:id/reading/end',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const userId = req.currentUser.id;
+      const { words_read } = req.body;
+      
+      const session = endReadingSession({
+        documentId: docId,
+        userId
+      });
+      
+      if (words_read && userId) {
+        updateReadingProgressForGoal(userId, parseInt(words_read));
+      }
+      
+      wsService.notifyReadingUpdate(docId);
+      
+      res.json(session || { success: false });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/reading/heatmap',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const heatmap = getDocumentHeatmap(docId);
+      res.json({ heatmap });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/reading/active-readers',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const activeReaders = getActiveReaders(docId);
+      res.json({ active_readers: activeReaders });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/reading/stats',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const stats = getDocumentReadingStats(docId);
+      res.json(stats);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ============ 阅读目标 API ============
+
+app.get('/api/reading/goal', (req, res) => {
+  try {
+    const userId = req.currentUser.id;
+    if (!userId) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    const goal = getReadingGoal(userId);
+    res.json(goal);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/reading/goal', (req, res) => {
+  try {
+    const userId = req.currentUser.id;
+    if (!userId) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    const { daily_words_goal } = req.body;
+    if (!daily_words_goal || daily_words_goal <= 0) {
+      return res.status(400).json({ error: '无效的目标字数' });
+    }
+    const goal = setReadingGoal(userId, parseInt(daily_words_goal));
+    res.json(goal);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/reading/progress', (req, res) => {
+  try {
+    const userId = req.currentUser.id;
+    if (!userId) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    const progress = getReadingProgress(userId, '');
+    res.json(progress);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/reading/history', (req, res) => {
+  try {
+    const userId = req.currentUser.id;
+    if (!userId) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    const limit = req.query.limit ? parseInt(req.query.limit) : 10;
+    const history = getUserReadingHistory(userId, limit);
+    res.json({ history });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ============ 页面路由 ============
 
 app.get('/templates', (req, res) => {
@@ -2870,6 +3115,10 @@ app.get('/document/:id', (req, res) => {
 
 app.get('/graph/:documentId', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'knowledge-graph.html'));
+});
+
+app.get('/reading-analysis/:documentId', (req, res) => {
+  res.sendFile(path.join(__dirname, '..', 'public', 'reading-analysis.html'));
 });
 
 seedDemoData();
