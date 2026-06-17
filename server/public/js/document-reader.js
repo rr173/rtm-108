@@ -31,6 +31,8 @@ class DocumentReader {
     this.document = null;
     this.annotations = [];
     this.relations = [];
+    this.conflicts = [];
+    this.conflictingAnnotationIds = new Set();
     this.ws = null;
     this.selectedText = null;
     this.selectionRange = null;
@@ -38,6 +40,9 @@ class DocumentReader {
     this.currentAnnotation = null;
     this.currentUserId = localStorage.getItem('currentUserId') || 'user-admin';
     this.pendingAnnotationId = null;
+    this.conflictPanelOpen = false;
+    this.selectedResolution = new Map();
+    this.isOwner = false;
     if (!localStorage.getItem('currentUserId')) {
       localStorage.setItem('currentUserId', 'user-admin');
     }
@@ -133,6 +138,19 @@ class DocumentReader {
     document.getElementById('relationModalSave').addEventListener('click', () => {
       this.saveRelation();
     });
+
+    document.getElementById('conflictPanelToggle').addEventListener('click', () => {
+      this.toggleConflictPanel();
+    });
+
+    document.getElementById('conflictPanelClose').addEventListener('click', () => {
+      this.toggleConflictPanel(false);
+    });
+
+    document.getElementById('conflictBannerBtn').addEventListener('click', () => {
+      this.hideConflictBanner();
+      this.toggleConflictPanel(true);
+    });
   }
 
   connectWebSocket() {
@@ -182,9 +200,12 @@ class DocumentReader {
       case 'annotations_status':
         this.annotations = data.graph.annotations;
         this.relations = data.graph.relations;
+        this.conflicts = data.conflicts || [];
+        this.conflictingAnnotationIds = new Set(data.conflicting_annotation_ids || []);
         this.updateAnnotationList();
         this.renderHighlights();
         this.updateStats();
+        this.updateConflictUI();
         break;
       case 'annotation_created':
         if (!this.annotations.find(a => a.id === data.annotation.id)) {
@@ -237,6 +258,41 @@ class DocumentReader {
           this.showAnnotationDetail(this.currentAnnotationId);
         }
         break;
+      case 'conflicts_detected':
+        if (data.pending_conflicts) {
+          this.conflicts = data.pending_conflicts;
+          this.conflictingAnnotationIds = new Set(data.conflicting_annotation_ids || []);
+        }
+        if (data.conflicts && data.conflicts.length > 0) {
+          showToast(`检测到 ${data.conflicts.length} 个新的标注冲突`, 'warning');
+          this.showConflictBanner(data.conflicts.length);
+        }
+        if (data.graph) {
+          this.annotations = data.graph.annotations;
+          this.relations = data.graph.relations;
+        }
+        this.updateAnnotationList();
+        this.renderHighlights();
+        this.updateStats();
+        this.updateConflictUI();
+        break;
+      case 'conflict_resolved':
+        if (data.pending_conflicts) {
+          this.conflicts = data.pending_conflicts;
+          this.conflictingAnnotationIds = new Set(data.conflicting_annotation_ids || []);
+        }
+        if (data.graph) {
+          this.annotations = data.graph.annotations;
+          this.relations = data.graph.relations;
+        }
+        if (data.result && data.result.conflict) {
+          showToast('冲突已裁决', 'success');
+        }
+        this.updateAnnotationList();
+        this.renderHighlights();
+        this.updateStats();
+        this.updateConflictUI();
+        break;
     }
   }
 
@@ -245,6 +301,7 @@ class DocumentReader {
       const response = await this.apiFetch(`/api/documents/${this.documentId}`);
       this.document = await response.json();
       document.getElementById('documentTitle').textContent = this.document.title;
+      this.isOwner = this.document.current_user_role === 'owner';
       this.renderContent();
       this.loadAnnotations();
     } catch (error) {
@@ -304,9 +361,13 @@ class DocumentReader {
         html += this.escapeHtml(content.substring(lastIndex, annotation.start_offset));
       }
 
-      html += `<span class="annotation-highlight" 
+      const isConflicting = this.conflictingAnnotationIds.has(annotation.id);
+      const conflictClass = isConflicting ? ' annotation-conflict' : '';
+
+      html += `<span class="annotation-highlight${conflictClass}" 
                    data-id="${annotation.id}" 
                    data-type="${annotation.type}"
+                   data-conflict="${isConflicting}"
                    style="background-color: ${annotation.color}; border-color: ${annotation.border_color};">
                 ${this.escapeHtml(annotation.text)}
               </span>`;
@@ -326,6 +387,73 @@ class DocumentReader {
         const id = parseInt(el.dataset.id);
         this.showAnnotationDetail(id);
       });
+    });
+
+    this.renderConflictOverlays();
+  }
+
+  renderConflictOverlays() {
+    const container = document.getElementById('documentContent');
+    const existingOverlays = container.querySelectorAll('.conflict-overlay');
+    existingOverlays.forEach(o => o.remove());
+
+    const textEl = document.getElementById('documentText');
+    if (!textEl) return;
+
+    this.conflicts.forEach(conflict => {
+      if (conflict.status !== 'pending') return;
+
+      const startOffset = conflict.overlap_start;
+      const endOffset = conflict.overlap_end;
+
+      const range = document.createRange();
+      const walker = document.createTreeWalker(textEl, NodeFilter.SHOW_TEXT, null);
+
+      let currentOffset = 0;
+      let startNode = null;
+      let startNodeOffset = 0;
+      let endNode = null;
+      let endNodeOffset = 0;
+
+      while (walker.nextNode()) {
+        const textNode = walker.currentNode;
+        const nodeLength = textNode.length;
+
+        if (!startNode && currentOffset + nodeLength > startOffset) {
+          startNode = textNode;
+          startNodeOffset = startOffset - currentOffset;
+        }
+
+        if (!endNode && currentOffset + nodeLength >= endOffset) {
+          endNode = textNode;
+          endNodeOffset = endOffset - currentOffset;
+          break;
+        }
+
+        currentOffset += nodeLength;
+      }
+
+      if (startNode && endNode) {
+        try {
+          range.setStart(startNode, startNodeOffset);
+          range.setEnd(endNode, endNodeOffset);
+
+          const rect = range.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+
+          const overlay = document.createElement('div');
+          overlay.className = 'conflict-overlay';
+          overlay.style.left = `${rect.left - containerRect.left + container.scrollLeft}px`;
+          overlay.style.top = `${rect.top - containerRect.top + container.scrollTop}px`;
+          overlay.style.width = `${rect.width}px`;
+          overlay.style.height = `${rect.height}px`;
+          overlay.title = `冲突区域: ${conflict.annotations.map(a => a.text).join(' vs ')}`;
+
+          container.appendChild(overlay);
+        } catch (e) {
+          console.warn('无法创建冲突覆盖层:', e);
+        }
+      }
     });
   }
 
@@ -658,6 +786,213 @@ class DocumentReader {
     }
   }
 
+  toggleConflictPanel(open = null) {
+    this.conflictPanelOpen = open === null ? !this.conflictPanelOpen : open;
+    const panel = document.getElementById('conflictPanel');
+    const toggle = document.getElementById('conflictPanelToggle');
+
+    if (this.conflictPanelOpen) {
+      panel.classList.add('open');
+      toggle.classList.add('active');
+      this.renderConflictList();
+    } else {
+      panel.classList.remove('open');
+      toggle.classList.remove('active');
+    }
+  }
+
+  showConflictBanner(count) {
+    const banner = document.getElementById('conflictBanner');
+    document.getElementById('conflictBannerCount').textContent = count;
+    banner.classList.remove('hidden');
+  }
+
+  hideConflictBanner() {
+    document.getElementById('conflictBanner').classList.add('hidden');
+  }
+
+  updateConflictUI() {
+    const pendingConflicts = this.conflicts.filter(c => c.status === 'pending');
+    const count = pendingConflicts.length;
+
+    document.getElementById('conflictBadge').textContent = count;
+    document.getElementById('conflictPanelCount').textContent = count;
+
+    const toggle = document.getElementById('conflictPanelToggle');
+    if (count > 0) {
+      toggle.classList.remove('hidden');
+      if (!this.conflictPanelOpen) {
+        this.showConflictBanner(count);
+      }
+    } else {
+      toggle.classList.add('hidden');
+      this.hideConflictBanner();
+    }
+
+    if (this.conflictPanelOpen) {
+      this.renderConflictList();
+    }
+  }
+
+  renderConflictList() {
+    const body = document.getElementById('conflictPanelBody');
+    const pendingConflicts = this.conflicts.filter(c => c.status === 'pending');
+
+    if (pendingConflicts.length === 0) {
+      body.innerHTML = `
+        <div class="no-conflicts">
+          <div class="no-conflicts-icon">✅</div>
+          <div>暂无标注冲突</div>
+        </div>
+      `;
+      return;
+    }
+
+    body.innerHTML = pendingConflicts.map(conflict => {
+      const annotations = conflict.annotations;
+      const overlapText = conflict.overlap_text;
+
+      return `
+        <div class="conflict-item" data-conflict-id="${conflict.id}">
+          <div class="conflict-item-header">
+            <span class="conflict-badge-warning">⚠️ 冲突 #${conflict.id}</span>
+            <span class="conflict-overlap-text">重叠: "${this.escapeHtml(overlapText)}"</span>
+          </div>
+          
+          <div class="conflict-annotations">
+            ${annotations.map((ann, idx) => `
+              <div class="conflict-annotation-card">
+                <div class="conflict-annotation-header">
+                  <span class="conflict-annotation-label" style="background-color: ${ann.color}; border-color: ${ann.border_color};">
+                    ${ann.type}
+                  </span>
+                  <span class="conflict-annotation-user">
+                    👤 ${ann.created_by_username || ann.created_by}
+                  </span>
+                </div>
+                <div class="conflict-annotation-text">${this.escapeHtml(ann.text)}</div>
+                <div class="conflict-annotation-range">[${ann.start_offset}-${ann.end_offset}]</div>
+                ${ann.description ? `<div class="conflict-annotation-desc">${this.escapeHtml(ann.description)}</div>` : ''}
+              </div>
+            `).join('')}
+          </div>
+
+          ${this.isOwner ? `
+            <div class="conflict-resolution">
+              <div class="resolution-options">
+                <label class="resolution-option">
+                  <input type="radio" name="resolution_${conflict.id}" value="keep_first">
+                  <span>保留第一个</span>
+                </label>
+                <label class="resolution-option">
+                  <input type="radio" name="resolution_${conflict.id}" value="keep_second">
+                  <span>保留第二个</span>
+                </label>
+                <label class="resolution-option">
+                  <input type="radio" name="resolution_${conflict.id}" value="merge">
+                  <span>合并为新标注</span>
+                </label>
+                <label class="resolution-option">
+                  <input type="radio" name="resolution_${conflict.id}" value="shorten">
+                  <span>缩短范围消除重叠</span>
+                </label>
+              </div>
+
+              <div class="merge-form" id="mergeForm_${conflict.id}" style="display: none;">
+                <div class="form-group">
+                  <label>类型</label>
+                  <select id="mergeType_${conflict.id}">
+                    <option value="PERSON">人物</option>
+                    <option value="ORG">组织</option>
+                    <option value="GPE">地点</option>
+                    <option value="EVENT">事件</option>
+                    <option value="DATE">日期</option>
+                    <option value="MISC">其他</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>文本</label>
+                  <input type="text" id="mergeText_${conflict.id}" value="${this.escapeHtml(overlapText)}">
+                </div>
+                <div class="form-group">
+                  <label>描述</label>
+                  <textarea id="mergeDesc_${conflict.id}" placeholder="输入合并描述..."></textarea>
+                </div>
+              </div>
+
+              <div class="resolution-actions">
+                <button class="resolution-btn" onclick="reader.resolveConflict(${conflict.id}, ${annotations[0].id}, ${annotations[1].id})">
+                  裁决
+                </button>
+              </div>
+            </div>
+          ` : `
+            <div class="conflict-no-permission">
+              ⚠️ 仅文档所有者可以裁决冲突
+            </div>
+          `}
+        </div>
+      `;
+    }).join('');
+
+    pendingConflicts.forEach(conflict => {
+      const radios = document.querySelectorAll(`input[name="resolution_${conflict.id}"]`);
+      radios.forEach(radio => {
+        radio.addEventListener('change', (e) => {
+          this.selectedResolution.set(conflict.id, e.target.value);
+          const mergeForm = document.getElementById(`mergeForm_${conflict.id}`);
+          if (mergeForm) {
+            mergeForm.style.display = e.target.value === 'merge' ? 'block' : 'none';
+          }
+        });
+      });
+    });
+  }
+
+  async resolveConflict(conflictId, ann1Id, ann2Id) {
+    const resolution = this.selectedResolution.get(conflictId);
+    if (!resolution) {
+      alert('请选择裁决方式');
+      return;
+    }
+
+    const body = {
+      resolution,
+      resolved_by: this.currentUserId
+    };
+
+    if (resolution === 'keep_first') {
+      body.keep_annotation_id = ann1Id;
+    } else if (resolution === 'keep_second') {
+      body.keep_annotation_id = ann2Id;
+    } else if (resolution === 'merge') {
+      body.merge_type = document.getElementById(`mergeType_${conflictId}`).value;
+      body.merge_text = document.getElementById(`mergeText_${conflictId}`).value;
+      body.merge_description = document.getElementById(`mergeDesc_${conflictId}`).value;
+    }
+
+    try {
+      const response = await this.apiFetch(`/api/conflicts/${conflictId}/resolve`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || '裁决失败');
+      }
+
+      const result = await response.json();
+      this.selectedResolution.delete(conflictId);
+      showToast('冲突已裁决', 'success');
+    } catch (error) {
+      alert(error.message);
+    }
+  }
+
   escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
@@ -665,6 +1000,7 @@ class DocumentReader {
   }
 }
 
+let reader;
 document.addEventListener('DOMContentLoaded', () => {
-  new DocumentReader();
+  reader = new DocumentReader();
 });

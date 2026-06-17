@@ -31,6 +31,8 @@ class KnowledgeGraph {
     this.document = null;
     this.annotations = [];
     this.relations = [];
+    this.conflicts = [];
+    this.conflictingAnnotationIds = new Set();
     this.nodes = new Map();
     this.edges = [];
     this.ws = null;
@@ -156,6 +158,8 @@ class KnowledgeGraph {
       case 'annotations_status':
         this.annotations = data.graph.annotations;
         this.relations = data.graph.relations;
+        this.conflicts = data.conflicts || [];
+        this.conflictingAnnotationIds = new Set(data.conflicting_annotation_ids || []);
         this.initNodes();
         this.render();
         this.updateStats();
@@ -163,7 +167,9 @@ class KnowledgeGraph {
       case 'annotation_created':
         if (!this.annotations.find(a => a.id === data.annotation.id)) {
           this.annotations.push(data.annotation);
-          this.addNode(data.annotation);
+          if (!this.conflictingAnnotationIds.has(data.annotation.id)) {
+            this.addNode(data.annotation);
+          }
           this.render();
           this.updateStats();
         }
@@ -213,6 +219,34 @@ class KnowledgeGraph {
         this.render();
         this.updateStats();
         break;
+      case 'conflicts_detected':
+        if (data.pending_conflicts) {
+          this.conflicts = data.pending_conflicts;
+          this.conflictingAnnotationIds = new Set(data.conflicting_annotation_ids || []);
+        }
+        if (data.graph) {
+          this.annotations = data.graph.annotations;
+          this.relations = data.graph.relations;
+        }
+        this.nodes.clear();
+        this.initNodes();
+        this.render();
+        this.updateStats();
+        break;
+      case 'conflict_resolved':
+        if (data.pending_conflicts) {
+          this.conflicts = data.pending_conflicts;
+          this.conflictingAnnotationIds = new Set(data.conflicting_annotation_ids || []);
+        }
+        if (data.graph) {
+          this.annotations = data.graph.annotations;
+          this.relations = data.graph.relations;
+        }
+        this.nodes.clear();
+        this.initNodes();
+        this.render();
+        this.updateStats();
+        break;
     }
   }
 
@@ -239,7 +273,9 @@ class KnowledgeGraph {
     const centerY = this.height / 2;
     const radius = Math.min(this.width, this.height) * 0.35;
 
-    this.annotations.forEach((annotation, idx) => {
+    const filteredAnnotations = this.annotations.filter(a => !this.conflictingAnnotationIds.has(a.id));
+
+    filteredAnnotations.forEach((annotation, idx) => {
       if (!this.nodes.has(annotation.id)) {
         let x, y;
 
@@ -247,7 +283,7 @@ class KnowledgeGraph {
           x = annotation.position_x;
           y = annotation.position_y;
         } else {
-          const angle = (idx / this.annotations.length) * Math.PI * 2;
+          const angle = (idx / filteredAnnotations.length) * Math.PI * 2;
           x = centerX + Math.cos(angle) * radius;
           y = centerY + Math.sin(angle) * radius;
         }
@@ -293,7 +329,12 @@ class KnowledgeGraph {
   renderEdges() {
     this.edgesGroup.innerHTML = '';
 
-    this.relations.forEach(relation => {
+    const filteredRelations = this.relations.filter(relation => {
+      return !this.conflictingAnnotationIds.has(relation.from_annotation_id) &&
+             !this.conflictingAnnotationIds.has(relation.to_annotation_id);
+    });
+
+    filteredRelations.forEach(relation => {
       const fromNode = this.nodes.get(relation.from_annotation_id);
       const toNode = this.nodes.get(relation.to_annotation_id);
 
@@ -666,10 +707,20 @@ class KnowledgeGraph {
   }
 
   updateStats() {
-    document.getElementById('statAnnotations').textContent = this.annotations.length;
-    document.getElementById('statRelations').textContent = this.relations.length;
+    const filteredAnnotations = this.annotations.filter(a => !this.conflictingAnnotationIds.has(a.id));
+    const filteredRelations = this.relations.filter(r => 
+      !this.conflictingAnnotationIds.has(r.from_annotation_id) && 
+      !this.conflictingAnnotationIds.has(r.to_annotation_id)
+    );
+    const conflictCount = this.conflicts.filter(c => c.status === 'pending').length;
 
-    const typeCounts = this.annotations.reduce((acc, a) => {
+    document.getElementById('statAnnotations').textContent = filteredAnnotations.length;
+    document.getElementById('statRelations').textContent = filteredRelations.length;
+    if (document.getElementById('statConflicts')) {
+      document.getElementById('statConflicts').textContent = conflictCount;
+    }
+
+    const typeCounts = filteredAnnotations.reduce((acc, a) => {
       acc[a.type] = (acc[a.type] || 0) + 1;
       return acc;
     }, {});

@@ -4,7 +4,7 @@ const { getReviewById, getCommentsByReview } = require('./reviewService');
 const { listMirrorsByDocument, getMirrorById, getTranslationWorkbench } = require('./mirrorService');
 const { getDocumentById } = require('./documentService');
 const { getInstanceById, listTodos } = require('./approvalWorkflowService');
-const { getKnowledgeGraph } = require('./annotationService');
+const { getKnowledgeGraph, listConflictsByDocument, getConflictingAnnotationIds } = require('./annotationService');
 
 class WsService {
   constructor(server) {
@@ -537,10 +537,14 @@ class WsService {
     this.clientAnnotations.get(ws).add(docId);
 
     const graph = getKnowledgeGraph(docId);
+    const conflicts = listConflictsByDocument(docId, { status: 'pending' });
+    const conflictingAnnotationIds = getConflictingAnnotationIds(docId);
     ws.send(JSON.stringify({
       type: 'annotations_status',
       documentId: docId,
-      graph
+      graph,
+      conflicts,
+      conflicting_annotation_ids: conflictingAnnotationIds
     }));
   }
 
@@ -577,6 +581,52 @@ class WsService {
       type: eventType,
       documentId: docId,
       relation
+    });
+
+    if (this.annotationSubscriptions.has(docId)) {
+      this.annotationSubscriptions.get(docId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+  }
+
+  notifyAnnotationConflictsUpdate(documentId, conflicts, eventType = 'conflicts_detected') {
+    const docId = parseInt(documentId);
+    const graph = getKnowledgeGraph(docId);
+    const pendingConflicts = listConflictsByDocument(docId, { status: 'pending' });
+    const conflictingAnnotationIds = getConflictingAnnotationIds(docId);
+    const message = JSON.stringify({
+      type: eventType,
+      documentId: docId,
+      conflicts,
+      pending_conflicts: pendingConflicts,
+      conflicting_annotation_ids: conflictingAnnotationIds,
+      graph
+    });
+
+    if (this.annotationSubscriptions.has(docId)) {
+      this.annotationSubscriptions.get(docId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+  }
+
+  notifyConflictResolved(documentId, result, eventType = 'conflict_resolved') {
+    const docId = parseInt(documentId);
+    const graph = getKnowledgeGraph(docId);
+    const pendingConflicts = listConflictsByDocument(docId, { status: 'pending' });
+    const conflictingAnnotationIds = getConflictingAnnotationIds(docId);
+    const message = JSON.stringify({
+      type: eventType,
+      documentId: docId,
+      result,
+      pending_conflicts: pendingConflicts,
+      conflicting_annotation_ids: conflictingAnnotationIds,
+      graph
     });
 
     if (this.annotationSubscriptions.has(docId)) {

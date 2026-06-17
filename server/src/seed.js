@@ -1209,6 +1209,88 @@ function seedKnowledgeGraphData() {
     console.log(`   ${typeLabel}：${count}个`);
   });
 
+  console.log('\n========== 创建标注冲突演示数据 ==========');
+  console.log('创建2组重叠冲突标注，用于演示冲突检测与裁决功能...');
+
+  const conflictAnnotations = [];
+
+  const conflict1Pos1 = findOffset('张三教授');
+  if (conflict1Pos1) {
+    const ann = createAnnotation({
+      document_id: docId,
+      text: '张三教授',
+      type: ANNOTATION_TYPES.PERSON,
+      description: '用户A标注：张三教授是著名AI研究员',
+      start_offset: conflict1Pos1.start,
+      end_offset: conflict1Pos1.end,
+      created_by: 'user-editor',
+      created_by_username: '用户A'
+    });
+    if (!ann.error) conflictAnnotations.push(ann);
+  }
+
+  const conflict1Pos2 = findOffset('张三教授在开幕式上');
+  if (conflict1Pos2) {
+    const ann = createAnnotation({
+      document_id: docId,
+      text: '张三教授在开幕式上',
+      type: ANNOTATION_TYPES.EVENT,
+      description: '用户B标注：张三教授在开幕式上发表演讲',
+      start_offset: conflict1Pos2.start,
+      end_offset: conflict1Pos2.end,
+      created_by: 'user-viewer',
+      created_by_username: '用户B'
+    });
+    if (!ann.error) conflictAnnotations.push(ann);
+  }
+
+  const conflict2Pos1 = findOffset('上海国际会议中心');
+  if (conflict2Pos1) {
+    const ann = createAnnotation({
+      document_id: docId,
+      text: '上海国际会议中心',
+      type: ANNOTATION_TYPES.LOCATION,
+      description: '用户A标注：上海国际会议中心是会议场馆',
+      start_offset: conflict2Pos1.start,
+      end_offset: conflict2Pos1.end,
+      created_by: 'user-editor',
+      created_by_username: '用户A'
+    });
+    if (!ann.error) conflictAnnotations.push(ann);
+  }
+
+  const conflict2Pos2 = findOffset('上海国际会议中心隆重举行');
+  if (conflict2Pos2) {
+    const ann = createAnnotation({
+      document_id: docId,
+      text: '上海国际会议中心隆重举行',
+      type: ANNOTATION_TYPES.EVENT,
+      description: '用户B标注：峰会在上海国际会议中心隆重举行',
+      start_offset: conflict2Pos2.start,
+      end_offset: conflict2Pos2.end,
+      created_by: 'user-viewer',
+      created_by_username: '用户B'
+    });
+    if (!ann.error) conflictAnnotations.push(ann);
+  }
+
+  console.log('✅ 已创建', conflictAnnotations.length, '个冲突标注（2组重叠）：');
+  conflictAnnotations.forEach((ann, i) => {
+    console.log(`   ${i + 1}. [${ann.type_label}] "${ann.text}" (${ann.created_by_username}) [${ann.start_offset}-${ann.end_offset}]`);
+  });
+
+  const { detectConflicts, listConflictsByDocument, getConflictingAnnotationIds, CONFLICT_STATUS } = require('./annotationService');
+  const newConflicts = detectConflicts(docId);
+  const allConflicts = listConflictsByDocument(docId);
+  const conflictingIds = getConflictingAnnotationIds(docId);
+  console.log('\n🔍 冲突检测结果：');
+  console.log('   新检测到', newConflicts.length, '个冲突');
+  console.log('   总共', allConflicts.length, '个冲突');
+  console.log('   涉及', conflictingIds.length, '个标注');
+
+  const pendingConflicts = allConflicts.filter(c => c.status === CONFLICT_STATUS.PENDING);
+  console.log('   待裁决冲突：', pendingConflicts.length, '个');
+
   console.log('\n💡 知识图谱演示说明：');
   console.log('   1. 文档阅读页 → http://localhost:3000/document-reader.html?docId=' + docId);
   console.log('   2. 知识图谱页 → http://localhost:3000/knowledge-graph.html?docId=' + docId);
@@ -1217,6 +1299,12 @@ function seedKnowledgeGraphData() {
   console.log('   5. 在知识图谱页面可以拖拽节点调整布局');
   console.log('   6. 点击图谱节点可跳转回文档原文位置');
   console.log('   7. 打开多个浏览器窗口可体验实时同步功能');
+  console.log('\n🎯 冲突检测演示：');
+  console.log('   8. 打开文档会看到红色虚线框标记的冲突区域');
+  console.log('   9. 右上角⚠️按钮打开冲突解决面板');
+  console.log('  10. 仅文档所有者(user-admin)可以裁决冲突');
+  console.log('  11. 裁决方式：保留一个、合并标注、缩短范围');
+  console.log('  12. 裁决前冲突标注不参与知识图谱关系建立');
 
   console.log('\n✅ 知识图谱演示数据初始化完成！');
 }

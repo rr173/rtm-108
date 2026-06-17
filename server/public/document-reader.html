@@ -184,6 +184,33 @@
     </div>
   </div>
 
+  <button id="conflictPanelToggle" class="conflict-panel-toggle hidden">
+    <span>⚠️</span>
+    <span class="badge" id="conflictBadge">0</span>
+    <span>冲突</span>
+  </button>
+
+  <div id="conflictBanner" class="conflict-banner hidden">
+    <span>⚠️ 检测到 <span id="conflictBannerCount">0</span> 个标注冲突待裁决</span>
+    <button id="conflictBannerBtn">查看冲突</button>
+  </div>
+
+  <div id="conflictPanel" class="conflict-panel">
+    <div class="conflict-panel-header">
+      <h3>
+        ⚠️ 标注冲突
+        <span class="conflict-count" id="conflictPanelCount">0</span>
+      </h3>
+      <button class="conflict-panel-close" id="conflictPanelClose">&times;</button>
+    </div>
+    <div class="conflict-panel-body" id="conflictPanelBody">
+      <div class="no-conflicts">
+        <div class="no-conflicts-icon">✅</div>
+        <div>暂无标注冲突</div>
+      </div>
+    </div>
+  </div>
+
   <script src="/js/document-reader.js"></script>
 </body>
 </html>

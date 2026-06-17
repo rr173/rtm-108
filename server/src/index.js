@@ -58,8 +58,8 @@ const {
   listPatchesByReview,
   updatePatchStatus,
   deletePatch,
-  detectConflicts,
-  resolveConflict,
+  detectConflicts: detectPatchConflicts,
+  resolveConflict: resolvePatchConflict,
   mergePatches,
   getPatchStats
 } = require('./patchService');
@@ -154,6 +154,8 @@ const {
   ANNOTATION_COLORS,
   RELATION_TYPES,
   RELATION_TYPE_LABELS,
+  CONFLICT_STATUS,
+  RESOLUTION_TYPE,
   listAnnotationsByDocument,
   getAnnotationById,
   createAnnotation,
@@ -165,7 +167,12 @@ const {
   createRelation,
   updateRelation,
   deleteRelation,
-  getKnowledgeGraph
+  getKnowledgeGraph,
+  detectConflicts,
+  listConflictsByDocument,
+  getConflictById,
+  resolveConflict,
+  getConflictingAnnotationIds
 } = require('./annotationService');
 
 const app = express();
@@ -851,7 +858,7 @@ app.get(
       if (!version) {
         return res.status(400).json({ error: '缺少版本参数' });
       }
-      const conflicts = detectConflicts(parseInt(req.params.id), parseInt(version));
+      const conflicts = detectPatchConflicts(parseInt(req.params.id), parseInt(version));
       res.json(conflicts);
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -862,7 +869,7 @@ app.get(
 app.put('/api/patches/:id/resolve', (req, res) => {
   try {
     const { resolution, resolved_content } = req.body;
-    const result = resolveConflict(parseInt(req.params.id), resolution, resolved_content);
+    const result = resolvePatchConflict(parseInt(req.params.id), resolution, resolved_content);
     if (result.error) {
       return res.status(result.status || 400).json({ error: result.error });
     }
@@ -2381,7 +2388,15 @@ app.post(
 
       wsService.notifyAnnotationUpdate(docId, result, 'annotation_created');
 
-      res.status(201).json(result);
+      const newConflicts = detectConflicts(docId);
+      if (newConflicts.length > 0) {
+        wsService.notifyAnnotationConflictsUpdate(docId, newConflicts, 'conflicts_detected');
+      }
+
+      res.status(201).json({
+        annotation: result,
+        new_conflicts: newConflicts
+      });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -2645,12 +2660,137 @@ app.delete(
 );
 
 app.get(
+  '/api/documents/:id/conflicts',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const { status } = req.query;
+      const conflicts = listConflictsByDocument(docId, { status: status || null });
+      res.json(conflicts);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/conflicts/:id',
+  (req, res) => {
+    try {
+      const conflict = getConflictById(parseInt(req.params.id));
+      if (!conflict) {
+        return res.status(404).json({ error: '冲突不存在' });
+      }
+      const doc = getDocumentById(conflict.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(conflict.document_id, userId, ROLES.VIEWER, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+      res.json(conflict);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents/:id/conflicts/detect',
+  logAudit(OPERATION_TYPES.DOCUMENT_EDIT, {
+    getParams: (req) => ({ action: 'detect_conflicts' })
+  }),
+  requireDocPermission(ROLES.EDITOR),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const newConflicts = detectConflicts(docId);
+      if (newConflicts.length > 0) {
+        wsService.notifyAnnotationConflictsUpdate(docId, newConflicts, 'conflicts_detected');
+      }
+      res.json({
+        new_conflicts: newConflicts,
+        total_conflicts: listConflictsByDocument(docId, { status: CONFLICT_STATUS.PENDING }).length
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put(
+  '/api/conflicts/:id/resolve',
+  logAudit(OPERATION_TYPES.DOCUMENT_EDIT, {
+    getParams: (req) => ({ action: 'resolve_conflict', conflict_id: req.params.id, resolution: req.body?.resolution })
+  }),
+  (req, res) => {
+    try {
+      const conflictId = parseInt(req.params.id);
+      const existing = getConflictById(conflictId);
+      if (!existing) {
+        return res.status(404).json({ error: '冲突不存在' });
+      }
+
+      const doc = getDocumentById(existing.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(existing.document_id, userId, ROLES.OWNER, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({
+            error: permissionResult.reason || '只有文档所有者可以裁决冲突',
+            permission_required: 'owner'
+          });
+        }
+      }
+
+      const { resolution, merge_type, merge_text, merge_description, keep_annotation_id } = req.body;
+
+      const result = resolveConflict(conflictId, {
+        resolution,
+        resolved_by: req.currentUser.name,
+        merge_type,
+        merge_text,
+        merge_description,
+        keep_annotation_id: keep_annotation_id ? parseInt(keep_annotation_id) : null
+      });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      wsService.notifyConflictResolved(existing.document_id, result, 'conflict_resolved');
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/conflicting-annotations',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const conflictingIds = getConflictingAnnotationIds(docId);
+      res.json({ conflicting_annotation_ids: conflictingIds });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
   '/api/documents/:id/knowledge-graph',
   requireDocPermission(ROLES.VIEWER),
   (req, res) => {
     try {
       const docId = parseInt(req.params.id);
-      const graph = getKnowledgeGraph(docId);
+      const includeConflicts = req.query.include_conflicts === 'true';
+      const graph = getKnowledgeGraph(docId, { includeConflicts });
       res.json(graph);
     } catch (e) {
       res.status(500).json({ error: e.message });
