@@ -36,14 +36,31 @@ class DocumentReader {
     this.selectionRange = null;
     this.currentAnnotationId = null;
     this.currentAnnotation = null;
+    this.currentUserId = localStorage.getItem('currentUserId') || 'user-admin';
+    this.pendingAnnotationId = null;
+    if (!localStorage.getItem('currentUserId')) {
+      localStorage.setItem('currentUserId', 'user-admin');
+    }
 
     this.init();
+  }
+
+  apiFetch(url, options = {}) {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    };
+    if (this.currentUserId) {
+      headers['X-User-Id'] = this.currentUserId;
+    }
+    return fetch(url, { ...options, headers });
   }
 
   init() {
     const urlParams = new URLSearchParams(window.location.search);
     const pathMatch = window.location.pathname.match(/\/document\/(\d+)/);
     this.documentId = pathMatch ? parseInt(pathMatch[1]) : parseInt(urlParams.get('docId') || urlParams.get('id'));
+    this.pendingAnnotationId = parseInt(urlParams.get('annotation')) || null;
 
     if (!this.documentId) {
       alert('无效的文档ID');
@@ -225,7 +242,7 @@ class DocumentReader {
 
   async loadDocument() {
     try {
-      const response = await fetch(`/api/documents/${this.documentId}`);
+      const response = await this.apiFetch(`/api/documents/${this.documentId}`);
       this.document = await response.json();
       document.getElementById('documentTitle').textContent = this.document.title;
       this.renderContent();
@@ -240,15 +257,23 @@ class DocumentReader {
 
   async loadAnnotations() {
     try {
-      const response = await fetch(`/api/documents/${this.documentId}/annotations`);
+      const response = await this.apiFetch(`/api/documents/${this.documentId}/annotations`);
       this.annotations = await response.json();
 
-      const relResponse = await fetch(`/api/documents/${this.documentId}/relations`);
+      const relResponse = await this.apiFetch(`/api/documents/${this.documentId}/relations`);
       this.relations = await relResponse.json();
 
       this.updateAnnotationList();
       this.renderHighlights();
       this.updateStats();
+
+      if (this.pendingAnnotationId) {
+        setTimeout(() => {
+          this.jumpToAnnotation(this.pendingAnnotationId);
+          this.showAnnotationDetail(this.pendingAnnotationId);
+          this.pendingAnnotationId = null;
+        }, 200);
+      }
     } catch (error) {
       console.error('加载标注失败:', error);
     }
@@ -408,7 +433,7 @@ class DocumentReader {
     const description = document.getElementById('annotationDescription').value;
 
     try {
-      const response = await fetch(`/api/documents/${this.documentId}/annotations`, {
+      const response = await this.apiFetch(`/api/documents/${this.documentId}/annotations`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -427,11 +452,22 @@ class DocumentReader {
         throw new Error(error.error || '创建标注失败');
       }
 
+      const newAnnotation = await response.json();
+      
+      if (!this.annotations.find(a => a.id === newAnnotation.id)) {
+        this.annotations.push(newAnnotation);
+        this.updateAnnotationList();
+        this.renderHighlights();
+        this.updateStats();
+      }
+
       this.hideAnnotationModal();
       this.selectedText = null;
       this.selectionRange = null;
+      
+      showToast('标注创建成功', 'success');
     } catch (error) {
-      alert(error.message);
+      showToast(error.message, 'error');
     }
   }
 
@@ -519,7 +555,7 @@ class DocumentReader {
     if (!confirm('确定要删除这个标注吗？相关的关系也会被删除。')) return;
 
     try {
-      const response = await fetch(`/api/annotations/${this.currentAnnotationId}`, {
+      const response = await this.apiFetch(`/api/annotations/${this.currentAnnotationId}`, {
         method: 'DELETE'
       });
 
@@ -568,7 +604,7 @@ class DocumentReader {
     }
 
     try {
-      const response = await fetch(`/api/documents/${this.documentId}/relations`, {
+      const response = await this.apiFetch(`/api/documents/${this.documentId}/relations`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -596,7 +632,7 @@ class DocumentReader {
     if (!confirm('确定要删除这条关系吗？')) return;
 
     try {
-      const response = await fetch(`/api/relations/${relationId}`, {
+      const response = await this.apiFetch(`/api/relations/${relationId}`, {
         method: 'DELETE'
       });
 

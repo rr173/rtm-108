@@ -45,8 +45,23 @@ class KnowledgeGraph {
     this.nodeRadius = 40;
     this.forceStrength = 0.5;
     this.linkDistance = 150;
+    this.currentUserId = localStorage.getItem('currentUserId') || 'user-admin';
+    if (!localStorage.getItem('currentUserId')) {
+      localStorage.setItem('currentUserId', 'user-admin');
+    }
 
     this.init();
+  }
+
+  apiFetch(url, options = {}) {
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    };
+    if (this.currentUserId) {
+      headers['X-User-Id'] = this.currentUserId;
+    }
+    return fetch(url, { ...options, headers });
   }
 
   init() {
@@ -203,7 +218,7 @@ class KnowledgeGraph {
 
   async loadDocument() {
     try {
-      const response = await fetch(`/api/documents/${this.documentId}`);
+      const response = await this.apiFetch(`/api/documents/${this.documentId}`);
       this.document = await response.json();
       document.getElementById('documentTitle').textContent = this.document.title;
     } catch (error) {
@@ -450,7 +465,7 @@ class KnowledgeGraph {
   endDrag = async () => {
     if (this.dragging) {
       try {
-        await fetch(`/api/annotations/${this.dragging.node.id}`, {
+        await this.apiFetch(`/api/annotations/${this.dragging.node.id}`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json'
