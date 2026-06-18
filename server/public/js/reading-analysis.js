@@ -352,7 +352,7 @@ class ReadingAnalysis {
       this.paragraphDwellTimers.forEach((startTime, pIndex) => {
         const currentDwell = Date.now() - startTime;
         if (currentDwell >= 3000 && !this.readParagraphsByMe.has(pIndex)) {
-          this.markParagraphAsRead(pIndex);
+          this.markParagraphAsRead(pIndex, currentDwell);
         }
       });
     }, 1000);
@@ -370,14 +370,16 @@ class ReadingAnalysis {
       const dwellMs = Date.now() - startTime;
       this.paragraphDwellTimers.delete(paragraphIndex);
 
-      if (dwellMs >= 2000) {
-        this.reportParagraphProgress(paragraphIndex, dwellMs);
+      if (dwellMs >= 2000 && !this.readParagraphsByMe.has(paragraphIndex)) {
+        this.markParagraphAsRead(paragraphIndex, dwellMs);
       }
     }
   }
 
-  markParagraphAsRead(paragraphIndex) {
+  markParagraphAsRead(paragraphIndex, dwellMs) {
+    if (this.readParagraphsByMe.has(paragraphIndex)) return;
     this.readParagraphsByMe.add(paragraphIndex);
+
     const paraEl = document.querySelector(`.heatmap-paragraph[data-paragraph-index="${paragraphIndex}"]`);
     if (paraEl) {
       paraEl.classList.add('read');
@@ -391,6 +393,8 @@ class ReadingAnalysis {
       this.recommendations = this.recommendations.filter(r => r.paragraph_index !== paragraphIndex);
       this.renderRecommendations();
     }
+
+    this.reportParagraphProgress(paragraphIndex, dwellMs || 3000);
   }
 
   async reportParagraphProgress(paragraphIndex, dwellMs) {

@@ -2908,7 +2908,7 @@ app.post(
     try {
       const docId = parseInt(req.params.id);
       const userId = req.currentUser.id;
-      const { paragraph_index, scroll_position, dwell_time_ms } = req.body;
+      const { paragraph_index, scroll_position, dwell_time_ms, words_read } = req.body;
       
       const session = updateReadingProgress({
         documentId: docId,
@@ -2924,6 +2924,17 @@ app.post(
           durationMs: parseInt(dwell_time_ms),
           userId
         });
+      }
+
+      if (userId && paragraph_index !== undefined) {
+        updateUserReadingProfile(userId, docId, {
+          paragraphIndex: parseInt(paragraph_index),
+          dwellTimeMs: dwell_time_ms ? parseInt(dwell_time_ms) : 0,
+          wordsRead: words_read ? parseInt(words_read) : 0
+        });
+
+        const recommendations = getPersonalizedRecommendations(userId, docId);
+        wsService.notifyReadingRecommendationUpdate(docId, userId, recommendations);
       }
       
       wsService.notifyReadingUpdate(docId);
