@@ -531,6 +531,12 @@ function executeMerge(branchId, { conflict_resolutions = [], commit_message = ''
     return preview;
   }
 
+  const currentBranch = data.branches.find(b => b.id === branchId);
+  const mainVersionsAfter = data.versions.filter(v => v.document_id === currentBranch.document_id);
+  const latestMainAfter = mainVersionsAfter[mainVersionsAfter.length - 1];
+  const branchVersionsAfter = data.branchVersions.filter(v => v.branch_id === branchId);
+  const latestBranchAfter = branchVersionsAfter[branchVersionsAfter.length - 1];
+
   let mergedText;
 
   if (preview.has_conflicts) {
@@ -589,16 +595,19 @@ function executeMerge(branchId, { conflict_resolutions = [], commit_message = ''
 
   data.versions.push(newVersion);
 
-  branch.status = 'merged';
-  branch.merged_at = now();
-  branch.merged_into_version = newVersion.version_number;
+  const branchToUpdate = data.branches.find(b => b.id === branchId);
+  if (branchToUpdate) {
+    branchToUpdate.status = 'merged';
+    branchToUpdate.merged_at = now();
+    branchToUpdate.merged_into_version = newVersion.version_number;
+  }
 
   const mergeRecord = {
     id: data.nextMergeRecordId++,
-    document_id: branch.document_id,
+    document_id: branchToUpdate.document_id,
     branch_id: branchId,
-    branch_name: branch.name,
-    base_version: branch.base_version,
+    branch_name: branchToUpdate.name,
+    base_version: branchToUpdate.base_version,
     main_version_before: latestMainVersion ? latestMainVersion.version_number : 0,
     main_version_after: newVersion.version_number,
     branch_version: latestBranchVersion.version_number,

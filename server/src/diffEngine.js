@@ -352,235 +352,172 @@ function threeWayMerge(baseText, mineText, theirsText) {
   const mineDiff = lineDiffToArray(baseLines, mineLines);
   const theirsDiff = lineDiffToArray(baseLines, theirsLines);
 
+  const mineMap = new Map();
+  const mineAdds = [];
+  mineDiff.forEach((op, idx) => {
+    if (op.type === 'added') {
+      mineAdds.push({ ...op, diffIndex: idx });
+    } else if (op.type !== 'unchanged') {
+      mineMap.set(op.baseLine, { ...op, diffIndex: idx });
+    }
+  });
+
+  const theirsMap = new Map();
+  const theirsAdds = [];
+  theirsDiff.forEach((op, idx) => {
+    if (op.type === 'added') {
+      theirsAdds.push({ ...op, diffIndex: idx });
+    } else if (op.type !== 'unchanged') {
+      theirsMap.set(op.baseLine, { ...op, diffIndex: idx });
+    }
+  });
+
   const result = [];
   const conflicts = [];
 
-  let baseIdx = 0;
-  let mineIdx = 0;
-  let theirsIdx = 0;
+  let mineAddIdx = 0;
+  let theirsAddIdx = 0;
 
-  while (baseIdx < baseLines.length || mineIdx < mineDiff.length || theirsIdx < theirsDiff.length) {
-    const mineOp = mineDiff[mineIdx];
-    const theirsOp = theirsDiff[theirsIdx];
-
-    const mineBaseLine = mineOp ? mineOp.baseLine : Infinity;
-    const theirsBaseLine = theirsOp ? theirsOp.baseLine : Infinity;
-
-    if (mineOp && mineOp.type === 'unchanged' && (!theirsOp || theirsOp.type !== 'conflict-start')) {
-      while (baseIdx < baseLines.length && 
-             (mineIdx >= mineDiff.length || mineDiff[mineIdx]?.type === 'unchanged' || mineDiff[mineIdx]?.baseLine > baseIdx) &&
-             (theirsIdx >= theirsDiff.length || theirsDiff[theirsIdx]?.type === 'unchanged' || theirsDiff[theirsIdx]?.baseLine > baseIdx)) {
-        result.push({
-          type: 'unchanged',
-          content: baseLines[baseIdx],
-          baseLine: baseIdx,
-          mineLine: baseIdx,
-          theirsLine: baseIdx
-        });
-        baseIdx++;
-      }
-      continue;
+  for (let baseIdx = 0; baseIdx < baseLines.length; baseIdx++) {
+    while (mineAddIdx < mineAdds.length && mineAdds[mineAddIdx].baseLine <= baseIdx) {
+      result.push({
+        type: 'added-from-mine',
+        content: mineAdds[mineAddIdx].content,
+        baseLine: null,
+        mineLine: mineAdds[mineAddIdx].targetLine,
+        theirsLine: null
+      });
+      mineAddIdx++;
+    }
+    while (theirsAddIdx < theirsAdds.length && theirsAdds[theirsAddIdx].baseLine <= baseIdx) {
+      result.push({
+        type: 'added-from-theirs',
+        content: theirsAdds[theirsAddIdx].content,
+        baseLine: null,
+        mineLine: null,
+        theirsLine: theirsAdds[theirsAddIdx].targetLine
+      });
+      theirsAddIdx++;
     }
 
-    if (mineBaseLine < theirsBaseLine) {
-      if (mineOp.type === 'added') {
-        result.push({
-          type: 'added-from-mine',
-          content: mineOp.content,
-          baseLine: null,
-          mineLine: mineOp.targetLine,
-          theirsLine: null
-        });
-        mineIdx++;
-      } else if (mineOp.type === 'deleted') {
+    const mineOp = mineMap.get(baseIdx);
+    const theirsOp = theirsMap.get(baseIdx);
+
+    if (!mineOp && !theirsOp) {
+      result.push({
+        type: 'unchanged',
+        content: baseLines[baseIdx],
+        baseLine: baseIdx,
+        mineLine: baseIdx,
+        theirsLine: baseIdx
+      });
+    } else if (mineOp && !theirsOp) {
+      if (mineOp.type === 'deleted') {
         result.push({
           type: 'deleted-from-mine',
           content: mineOp.content,
-          baseLine: mineOp.baseLine,
+          baseLine: baseIdx,
           mineLine: null,
-          theirsLine: mineOp.baseLine
+          theirsLine: baseIdx
         });
-        mineIdx++;
-        baseIdx++;
       } else if (mineOp.type === 'modified') {
         result.push({
           type: 'modified-from-mine',
           oldContent: mineOp.oldContent,
           newContent: mineOp.newContent,
-          baseLine: mineOp.baseLine,
+          baseLine: baseIdx,
           mineLine: mineOp.targetLine,
-          theirsLine: mineOp.baseLine
+          theirsLine: baseIdx
         });
-        mineIdx++;
-        baseIdx++;
-      } else {
-        mineIdx++;
       }
-    } else if (theirsBaseLine < mineBaseLine) {
-      if (theirsOp.type === 'added') {
-        result.push({
-          type: 'added-from-theirs',
-          content: theirsOp.content,
-          baseLine: null,
-          mineLine: null,
-          theirsLine: theirsOp.targetLine
-        });
-        theirsIdx++;
-      } else if (theirsOp.type === 'deleted') {
+    } else if (!mineOp && theirsOp) {
+      if (theirsOp.type === 'deleted') {
         result.push({
           type: 'deleted-from-theirs',
           content: theirsOp.content,
-          baseLine: theirsOp.baseLine,
-          mineLine: theirsOp.baseLine,
+          baseLine: baseIdx,
+          mineLine: baseIdx,
           theirsLine: null
         });
-        theirsIdx++;
-        baseIdx++;
       } else if (theirsOp.type === 'modified') {
         result.push({
           type: 'modified-from-theirs',
           oldContent: theirsOp.oldContent,
           newContent: theirsOp.newContent,
-          baseLine: theirsOp.baseLine,
-          mineLine: theirsOp.baseLine,
-          theirsLine: theirsOp.targetLine
-        });
-        theirsIdx++;
-        baseIdx++;
-      } else {
-        theirsIdx++;
-      }
-    } else if (mineBaseLine === theirsBaseLine && mineBaseLine !== Infinity) {
-      if (mineOp.type === 'unchanged' && theirsOp.type === 'unchanged') {
-        result.push({
-          type: 'unchanged',
-          content: baseLines[baseIdx],
           baseLine: baseIdx,
           mineLine: baseIdx,
-          theirsLine: baseIdx
+          theirsLine: theirsOp.targetLine
         });
-        mineIdx++;
-        theirsIdx++;
-        baseIdx++;
-      } else if (mineOp.type === 'unchanged' && theirsOp.type !== 'unchanged') {
-        if (theirsOp.type === 'added') {
-          result.push({
-            type: 'added-from-theirs',
-            content: theirsOp.content,
-            baseLine: null,
-            mineLine: null,
-            theirsLine: theirsOp.targetLine
-          });
-          theirsIdx++;
-        } else if (theirsOp.type === 'deleted') {
-          result.push({
-            type: 'deleted-from-theirs',
-            content: theirsOp.content,
-            baseLine: theirsOp.baseLine,
-            mineLine: theirsOp.baseLine,
-            theirsLine: null
-          });
-          theirsIdx++;
-          baseIdx++;
-        } else if (theirsOp.type === 'modified') {
-          result.push({
-            type: 'modified-from-theirs',
-            oldContent: theirsOp.oldContent,
-            newContent: theirsOp.newContent,
-            baseLine: theirsOp.baseLine,
-            mineLine: theirsOp.baseLine,
-            theirsLine: theirsOp.targetLine
-          });
-          theirsIdx++;
-          baseIdx++;
-        }
-      } else if (theirsOp.type === 'unchanged' && mineOp.type !== 'unchanged') {
-        if (mineOp.type === 'added') {
-          result.push({
-            type: 'added-from-mine',
-            content: mineOp.content,
-            baseLine: null,
-            mineLine: mineOp.targetLine,
-            theirsLine: null
-          });
-          mineIdx++;
-        } else if (mineOp.type === 'deleted') {
-          result.push({
-            type: 'deleted-from-mine',
-            content: mineOp.content,
-            baseLine: mineOp.baseLine,
-            mineLine: null,
-            theirsLine: mineOp.baseLine
-          });
-          mineIdx++;
-          baseIdx++;
-        } else if (mineOp.type === 'modified') {
-          result.push({
-            type: 'modified-from-mine',
-            oldContent: mineOp.oldContent,
-            newContent: mineOp.newContent,
-            baseLine: mineOp.baseLine,
-            mineLine: mineOp.targetLine,
-            theirsLine: mineOp.baseLine
-          });
-          mineIdx++;
-          baseIdx++;
-        }
-      } else {
-        const hasConflict = mineOp.type !== theirsOp.type ||
-          (mineOp.type === 'modified' && mineOp.newContent !== theirsOp.newContent) ||
-          (mineOp.type === 'deleted' && theirsOp.type !== 'deleted') ||
-          (mineOp.type === 'added' && theirsOp.type === 'added' && mineOp.content !== theirsOp.content);
-
-        if (hasConflict) {
-          const conflict = {
-            baseLine: mineOp.baseLine,
-            baseContent: mineOp.oldContent || mineOp.content || '',
-            mineContent: mineOp.newContent || (mineOp.type === 'deleted' ? '' : mineOp.content) || '',
-            theirsContent: theirsOp.newContent || (theirsOp.type === 'deleted' ? '' : theirsOp.content) || '',
-            mineType: mineOp.type,
-            theirsType: theirsOp.type
-          };
-          conflicts.push(conflict);
-          result.push({
-            type: 'conflict',
-            ...conflict
-          });
-        } else {
-          if (mineOp.type === 'deleted') {
-            result.push({
-              type: 'deleted-both',
-              content: mineOp.content,
-              baseLine: mineOp.baseLine,
-              mineLine: null,
-              theirsLine: null
-            });
-          } else if (mineOp.type === 'added') {
-            result.push({
-              type: 'added-both',
-              content: mineOp.content,
-              baseLine: null,
-              mineLine: mineOp.targetLine,
-              theirsLine: theirsOp.targetLine
-            });
-          } else if (mineOp.type === 'modified') {
-            result.push({
-              type: 'modified-both',
-              oldContent: mineOp.oldContent,
-              newContent: mineOp.newContent,
-              baseLine: mineOp.baseLine,
-              mineLine: mineOp.targetLine,
-              theirsLine: theirsOp.targetLine
-            });
-          }
-        }
-        mineIdx++;
-        theirsIdx++;
-        if (mineOp.type !== 'added') baseIdx++;
       }
     } else {
-      break;
+      const bothDeleted = mineOp.type === 'deleted' && theirsOp.type === 'deleted';
+      const bothAddedSame = mineOp.type === 'added' && theirsOp.type === 'added' && mineOp.content === theirsOp.content;
+      const bothModifiedSame = mineOp.type === 'modified' && theirsOp.type === 'modified' && mineOp.newContent === theirsOp.newContent;
+
+      if (bothDeleted || bothAddedSame || bothModifiedSame) {
+        if (mineOp.type === 'deleted') {
+          result.push({
+            type: 'deleted-both',
+            content: mineOp.content,
+            baseLine: baseIdx,
+            mineLine: null,
+            theirsLine: null
+          });
+        } else if (mineOp.type === 'added') {
+          result.push({
+            type: 'added-both',
+            content: mineOp.content,
+            baseLine: null,
+            mineLine: mineOp.targetLine,
+            theirsLine: theirsOp.targetLine
+          });
+        } else if (mineOp.type === 'modified') {
+          result.push({
+            type: 'modified-both',
+            oldContent: mineOp.oldContent,
+            newContent: mineOp.newContent,
+            baseLine: baseIdx,
+            mineLine: mineOp.targetLine,
+            theirsLine: theirsOp.targetLine
+          });
+        }
+      } else {
+        const conflict = {
+          baseLine: baseIdx,
+          baseContent: baseLines[baseIdx],
+          mineContent: mineOp.type === 'deleted' ? '' : (mineOp.newContent || mineOp.content || ''),
+          theirsContent: theirsOp.type === 'deleted' ? '' : (theirsOp.newContent || theirsOp.content || ''),
+          mineType: mineOp.type,
+          theirsType: theirsOp.type
+        };
+        conflicts.push(conflict);
+        result.push({
+          type: 'conflict',
+          ...conflict
+        });
+      }
     }
+  }
+
+  while (mineAddIdx < mineAdds.length) {
+    result.push({
+      type: 'added-from-mine',
+      content: mineAdds[mineAddIdx].content,
+      baseLine: null,
+      mineLine: mineAdds[mineAddIdx].targetLine,
+      theirsLine: null
+    });
+    mineAddIdx++;
+  }
+  while (theirsAddIdx < theirsAdds.length) {
+    result.push({
+      type: 'added-from-theirs',
+      content: theirsAdds[theirsAddIdx].content,
+      baseLine: null,
+      mineLine: null,
+      theirsLine: theirsAdds[theirsAddIdx].targetLine
+    });
+    theirsAddIdx++;
   }
 
   const mergedLines = [];
