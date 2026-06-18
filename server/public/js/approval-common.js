@@ -2,7 +2,11 @@ const ApprovalAPI = {
   async request(url, options = {}) {
     const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
     const userId = localStorage.getItem('approval_user_id');
-    if (userId) headers['X-User-Id'] = userId;
+    if (userId) {
+      headers['X-User-Id'] = userId;
+      const userName = getUserDisplayName(userId);
+      if (userName) headers['X-User-Name'] = encodeURIComponent(userName);
+    }
     const res = await fetch(url, { ...options, headers });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {

@@ -24,7 +24,18 @@ const ROLE_HIERARCHY = {
 const USER_NAMES = {
   'user-admin': '系统管理员',
   'user-editor': '编辑者小王',
-  'user-viewer': '只读用户小李'
+  'user-viewer': '只读用户小李',
+  'user-zhangsan': '张三',
+  'user-lisi': '李四',
+  'user-wangwu': '王五',
+  'user-zhaoliu': '赵六',
+  'user-sunqi': '孙七',
+  'user-zhouba': '周八',
+  'user-wujiu': '吴九',
+  'user-zhengshi': '郑十',
+  'user-manager': '部门经理',
+  'user-director': '总监',
+  'user-ceo': 'CEO'
 };
 
 function ensureDataDir() {

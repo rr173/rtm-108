@@ -57,7 +57,7 @@ function switchUser(userId) {
   currentUserName = getUserDisplayName(userId);
   localStorage.setItem('approval_user_id', userId);
   renderUserSelector();
-  unsubscribeTodos();
+  unsubscribeCurrentUserTodos();
   subscribeTodosWs();
   loadAllData();
   showToast(`已切换到：${currentUserName}`, 'info');
@@ -888,7 +888,7 @@ function handleTodoUpdate(data) {
   }
 }
 
-function unsubscribeTodos() {
+function unsubscribeCurrentUserTodos() {
   unsubscribeTodos(currentUserId);
 }
 

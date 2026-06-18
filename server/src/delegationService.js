@@ -60,8 +60,7 @@ function detectCycle(userId, agentId, excludeRuleId = null) {
     const activeRules = data.rules.filter(r => 
       r.enabled && 
       r.delegator_id === current && 
-      r.id !== excludeRuleId &&
-      isRuleEffective(r)
+      r.id !== excludeRuleId
     );
     
     for (const rule of activeRules) {

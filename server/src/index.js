@@ -238,9 +238,18 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 function getCurrentUser(req) {
   const userId = req.headers['x-user-id'] || null;
+  const headerName = req.headers['x-user-name'] || null;
+  let decodedName = null;
+  if (headerName) {
+    try {
+      decodedName = decodeURIComponent(headerName);
+    } catch (e) {
+      decodedName = headerName;
+    }
+  }
   return {
     userId,
-    userName: userId ? getUserName(userId) : '匿名用户'
+    userName: userId ? (decodedName || getUserName(userId)) : '匿名用户'
   };
 }
 
