@@ -462,11 +462,27 @@ class ApprovalSvgRenderer {
     group.appendChild(shape);
   }
 
+  _getNodeDelegationInfo(nodeId) {
+    if (!this.instance || !this.instance.records) return null;
+    const records = this.instance.records.filter(r => 
+      r.node_id === nodeId && 
+      r.delegator_id && 
+      r.delegator_id !== r.user_id &&
+      (r.action === 'approve' || r.action === 'reject')
+    );
+    if (records.length === 0) return null;
+    return {
+      delegatorName: records[0].delegator_name,
+      agentName: records[0].user_name
+    };
+  }
+
   _drawNodeContent(svgNS, group, node, style, colors, status) {
     const w = style.width;
     const h = style.height;
     const name = node.name || getNodeTypeLabel(node.type);
     const approvers = node.approvers || [];
+    const delegationInfo = this._getNodeDelegationInfo(node.id);
 
     if (style.shape === 'circle' || style.shape === 'double_circle') {
       const text = document.createElementNS(svgNS, 'text');
@@ -551,6 +567,47 @@ class ApprovalSvgRenderer {
           signText.textContent = `${approvers.length}人会签`;
           group.appendChild(signText);
         }
+      }
+      
+      if (delegationInfo) {
+        const delegationBadge = document.createElementNS(svgNS, 'g');
+        delegationBadge.setAttribute('transform', `translate(0, ${h + 4})`);
+        
+        const badgeBg = document.createElementNS(svgNS, 'rect');
+        badgeBg.setAttribute('x', 0);
+        badgeBg.setAttribute('y', 0);
+        badgeBg.setAttribute('width', w);
+        badgeBg.setAttribute('height', 22);
+        badgeBg.setAttribute('rx', 6);
+        badgeBg.setAttribute('fill', '#fef3c7');
+        badgeBg.setAttribute('stroke', '#fbbf24');
+        badgeBg.setAttribute('stroke-width', 1);
+        delegationBadge.appendChild(badgeBg);
+        
+        const iconText = document.createElementNS(svgNS, 'text');
+        iconText.setAttribute('x', 8);
+        iconText.setAttribute('y', 15);
+        iconText.setAttribute('fill', '#92400e');
+        iconText.setAttribute('class', 'node-label delegated-node-icon');
+        iconText.textContent = '🤝';
+        delegationBadge.appendChild(iconText);
+        
+        const delegateText = document.createElementNS(svgNS, 'text');
+        delegateText.setAttribute('x', 26);
+        delegateText.setAttribute('y', 15);
+        delegateText.setAttribute('fill', '#92400e');
+        delegateText.setAttribute('class', 'node-label delegated-node-label');
+        const delegateDisplay = `${delegationInfo.agentName}代签`;
+        delegateText.textContent = delegateDisplay.length > 12 ? delegateDisplay.slice(0, 11) + '…' : delegateDisplay;
+        delegateText.setAttribute('font-size', '10px');
+        delegateText.setAttribute('font-weight', '600');
+        delegationBadge.appendChild(delegateText);
+        
+        const title = document.createElementNS(svgNS, 'title');
+        title.textContent = `委托来源：${delegationInfo.delegatorName}，代签人：${delegationInfo.agentName}`;
+        delegationBadge.appendChild(title);
+        
+        group.appendChild(delegationBadge);
       }
     }
 

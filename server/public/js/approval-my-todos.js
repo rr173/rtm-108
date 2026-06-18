@@ -3,6 +3,7 @@ let currentUserName = getUserDisplayName(currentUserId);
 let currentTab = 'todo';
 let todosCache = [];
 let instancesCache = [];
+let currentSubTab = 'all';
 
 function renderUserSelector() {
   const users = getDemoUsers();
@@ -32,8 +33,24 @@ document.querySelectorAll('#mainTabs .tab-btn').forEach(btn => {
   btn.onclick = () => {
     currentTab = btn.dataset.tab;
     document.querySelectorAll('#mainTabs .tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+    
+    const subTabsContainer = document.getElementById('subTabsContainer');
+    if (currentTab === 'todo') {
+      subTabsContainer.style.display = '';
+    } else {
+      subTabsContainer.style.display = 'none';
+    }
+    
     renderList();
     updateTitle();
+  };
+});
+
+document.querySelectorAll('#subTabs .tab-btn').forEach(btn => {
+  btn.onclick = () => {
+    currentSubTab = btn.dataset.subtab;
+    document.querySelectorAll('#subTabs .tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+    renderList();
   };
 });
 
@@ -64,6 +81,10 @@ function renderStats() {
   const myStarted = instancesCache.filter(i => i.created_by === currentUserId).length;
   const pendingCount = instancesCache.filter(i => i.status === 'pending').length;
   const completedCount = instancesCache.filter(i => i.status === 'completed').length;
+  
+  const delegatedToMe = todosCache.filter(t => t.delegator_id && t.delegator_id !== currentUserId).length;
+  const delegatedAway = todosCache.filter(t => t.delegated_to_user_id && t.delegated_to_user_id !== currentUserId).length;
+  const normalTodos = todosCache.filter(t => !t.delegator_id || t.delegator_id === currentUserId).length;
 
   document.getElementById('statsGrid').innerHTML = `
     <div class="stat-card">
@@ -71,12 +92,12 @@ function renderStats() {
       <div class="stat-label">🎯 我的待办</div>
     </div>
     <div class="stat-card">
-      <div class="stat-number" style="color:#3b82f6;">${myStarted}</div>
-      <div class="stat-label">📤 我发起的</div>
+      <div class="stat-number" style="color:#f59e0b;">${delegatedToMe}</div>
+      <div class="stat-label">🤝 待我代签</div>
     </div>
     <div class="stat-card">
-      <div class="stat-number" style="color:#f59e0b;">${pendingCount}</div>
-      <div class="stat-label">⏳ 进行中</div>
+      <div class="stat-number" style="color:#8b5cf6;">${delegatedAway}</div>
+      <div class="stat-label">↪️ 已转出</div>
     </div>
     <div class="stat-card">
       <div class="stat-number" style="color:#10b981;">${completedCount}</div>
@@ -90,7 +111,17 @@ function renderList() {
   let list = [];
 
   if (currentTab === 'todo') {
-    list = todosCache.map(t => ({
+    let filteredTodos = [...todosCache];
+    
+    if (currentSubTab === 'delegated') {
+      filteredTodos = todosCache.filter(t => t.delegator_id && t.delegator_id !== currentUserId);
+    } else if (currentSubTab === 'normal') {
+      filteredTodos = todosCache.filter(t => !t.delegator_id || t.delegator_id === currentUserId);
+    } else if (currentSubTab === 'delegated-away') {
+      filteredTodos = todosCache.filter(t => t.delegated_to_user_id && t.delegated_to_user_id !== currentUserId);
+    }
+    
+    list = filteredTodos.map(t => ({
       id: t.instance_id,
       type: 'todo',
       title: t.document_title,
@@ -102,7 +133,12 @@ function renderList() {
       created_at: t.created_at,
       updated_at: t.updated_at,
       node_id: t.node_id,
-      metadata: null
+      metadata: null,
+      delegator_id: t.delegator_id,
+      delegator_name: t.delegator_name,
+      delegated_to_user_id: t.delegated_to_user_id,
+      delegated_to_user_name: t.delegated_to_user_name,
+      delegate_rule_id: t.delegate_rule_id
     }));
   } else if (currentTab === 'my') {
     list = instancesCache
@@ -166,13 +202,33 @@ function enrichInstance(inst, type) {
 }
 
 function renderTodoItem(item) {
+  const isDelegatedToMe = item.delegator_id && item.delegator_id !== currentUserId;
+  const isDelegatedAway = item.delegated_to_user_id && item.delegated_to_user_id !== currentUserId;
+  
   const nodeBadge = item.node_type === 'countersign'
     ? `<span class="tag" style="background:#ede9fe; color:#7c3aed;">✦ 会签</span>`
     : `<span class="tag" style="background:#dbeafe; color:#2563eb;">✓ 审批</span>`;
+  
+  let itemClass = 'todo-item';
+  let extraBadges = '';
+  let disableActions = false;
+  
+  if (isDelegatedToMe) {
+    itemClass += ' delegated has-delegated-tooltip';
+    extraBadges = `<span class="delegated-badge" title="委托来源：${escapeHtml(item.delegator_name || '')}">🤝 代签 ${escapeHtml(item.delegator_name || '')}</span>`;
+  } else if (isDelegatedAway) {
+    itemClass += ' delegated-away';
+    extraBadges = `<span class="delegated-away-tag">↪️ 已由 ${escapeHtml(item.delegated_to_user_name || '')} 代签</span>`;
+    disableActions = true;
+  }
+  
   return `
-    <div class="todo-item" onclick="openInstance(${item.id})">
+    <div class="${itemClass}" onclick="${disableActions ? 'event.preventDefault();' : `openInstance(${item.id})`}">
       <div class="todo-main">
-        <div class="todo-title">${escapeHtml(item.title)}</div>
+        <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
+          <div class="todo-title" style="margin:0;">${escapeHtml(item.title)}</div>
+          ${extraBadges}
+        </div>
         <div class="todo-meta">
           ${nodeBadge}
           <span>📌 ${escapeHtml(item.node_name || '未知节点')}</span>
@@ -180,13 +236,22 @@ function renderTodoItem(item) {
           <span>👤 ${escapeHtml(item.created_by_name || '')}</span>
           <span>🕐 ${timeAgo(item.updated_at)}</span>
         </div>
+        ${isDelegatedToMe ? `
+          <div class="delegated-tooltip" style="left:100px; bottom:100%;">
+            📝 委托来源：${escapeHtml(item.delegator_name || '')}
+          </div>
+        ` : ''}
       </div>
       <div class="todo-actions">
-        <div style="display:flex; gap:6px;">
-          <button class="mini-btn success" onclick="event.stopPropagation(); quickApprove(${item.id}, '${item.node_id}')">✓ 通过</button>
-          <button class="mini-btn danger" onclick="event.stopPropagation(); openReject(${item.id}, '${item.node_id}')">✗ 驳回</button>
-        </div>
-        <button class="mini-btn primary" onclick="event.stopPropagation(); openInstance(${item.id})">查看详情 →</button>
+        ${!disableActions ? `
+          <div style="display:flex; gap:6px;">
+            <button class="mini-btn success" onclick="event.stopPropagation(); quickApprove(${item.id}, '${item.node_id}')">✓ 通过</button>
+            <button class="mini-btn danger" onclick="event.stopPropagation(); openReject(${item.id}, '${item.node_id}')">✗ 驳回</button>
+          </div>
+          <button class="mini-btn primary" onclick="event.stopPropagation(); openInstance(${item.id})">查看详情 →</button>
+        ` : `
+          <button class="mini-btn" onclick="event.stopPropagation(); openInstance(${item.id})">查看详情 →</button>
+        `}
       </div>
     </div>
   `;
@@ -309,4 +374,9 @@ document.addEventListener('DOMContentLoaded', () => {
   subscribeWs();
   loadData();
   updateTitle();
+  
+  const subTabsContainer = document.getElementById('subTabsContainer');
+  if (currentTab === 'todo') {
+    subTabsContainer.style.display = '';
+  }
 });

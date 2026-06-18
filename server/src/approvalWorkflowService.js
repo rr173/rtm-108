@@ -1,6 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const { evaluateExpression, validateExpression } = require('./approvalExpressionParser');
+const {
+  DELEGATION_MODES,
+  findEffectiveDelegation,
+  shouldDelegateByTimeout,
+  isRuleEffective
+} = require('./delegationService');
 
 const NODE_TYPES = {
   START: 'start',
@@ -24,7 +30,8 @@ const ACTION_TYPES = {
   TRANSFER: 'transfer',
   START: 'start',
   ADVANCE: 'advance',
-  AUTO_PASS: 'auto_pass'
+  AUTO_PASS: 'auto_pass',
+  DELEGATE: 'delegate'
 };
 
 const dataDir = path.join(__dirname, '..', 'data');
@@ -588,6 +595,42 @@ function getRecordsByInstanceId(instanceId, reload = true) {
     .sort((a, b) => a.created_at - b.created_at);
 }
 
+function getApproverForNode(instance, nodeId, userId) {
+  const currentRound = instance ? (instance.reject_round || 0) : 0;
+  const records = data.records.filter(r =>
+    r.instance_id === instance.id &&
+    r.node_id === nodeId &&
+    r.round === currentRound
+  );
+  
+  const delegateRecord = records.find(r =>
+    r.action === ACTION_TYPES.DELEGATE &&
+    (r.user_id === userId || r.to_user_id === userId)
+  );
+  
+  if (delegateRecord) {
+    if (delegateRecord.to_user_id === userId) {
+      return {
+        isApprover: true,
+        isDelegate: true,
+        delegatorId: delegateRecord.user_id,
+        delegatorName: delegateRecord.user_name,
+        delegateRuleId: delegateRecord.delegate_rule_id
+      };
+    }
+    if (delegateRecord.user_id === userId) {
+      return {
+        isApprover: false,
+        isDelegated: true,
+        agentId: delegateRecord.to_user_id,
+        agentName: delegateRecord.to_user_name
+      };
+    }
+  }
+  
+  return { isApprover: false };
+}
+
 function isUserTodo(instance, userId) {
   if (!instance) return false;
   if (!userId) return false;
@@ -599,19 +642,14 @@ function isUserTodo(instance, userId) {
   for (const nodeId of currentNodeIds) {
     const node = template.nodes.find(n => n.id === nodeId);
     if (!node) continue;
-    if (node.type === NODE_TYPES.APPROVAL) {
+    
+    const approverInfo = getApproverForNode(instance, nodeId, userId);
+    if (approverInfo.isApprover) return true;
+    
+    if (node.type === NODE_TYPES.APPROVAL || node.type === NODE_TYPES.COUNTERSIGN) {
       if ((node.approvers || []).includes(userId)) {
-        const hasApproved = data.records.some(r =>
-          r.instance_id === instance.id &&
-          r.node_id === nodeId &&
-          r.user_id === userId &&
-          (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT) &&
-          r.round === currentRound
-        );
-        if (!hasApproved) return true;
-      }
-    } else if (node.type === NODE_TYPES.COUNTERSIGN) {
-      if ((node.approvers || []).includes(userId)) {
+        if (approverInfo.isDelegated) continue;
+        
         const hasApproved = data.records.some(r =>
           r.instance_id === instance.id &&
           r.node_id === nodeId &&
@@ -624,6 +662,29 @@ function isUserTodo(instance, userId) {
     }
   }
   return false;
+}
+
+function delegateTodo(instanceId, nodeId, { delegatorId, delegatorName, agentId, agentName, ruleId, comment }) {
+  loadData();
+  const instIdx = data.instances.findIndex(i => i.id === instanceId);
+  if (instIdx === -1) return { error: '审批实例不存在', status: 404 };
+  const inst = data.instances[instIdx];
+  const currentRound = inst.reject_round || 0;
+  
+  addRecord(instanceId, nodeId, ACTION_TYPES.DELEGATE, {
+    userId: delegatorId,
+    userName: delegatorName,
+    toUserId: agentId,
+    toUserName: agentName,
+    delegateRuleId: ruleId,
+    comment: comment || '自动委托',
+    round: currentRound
+  });
+  
+  data.instances[instIdx].updated_at = now();
+  saveData();
+  
+  return getInstanceById(instanceId, { reload: false });
 }
 
 function hasUserHistory(instanceId, userId) {
@@ -645,19 +706,44 @@ function listTodos(userId) {
       if (!node) continue;
       let isTodo = false;
       let nodeType = node.type;
-      if ((node.type === NODE_TYPES.APPROVAL || node.type === NODE_TYPES.COUNTERSIGN) &&
-        (node.approvers || []).includes(userId)) {
-        const hasApproved = data.records.some(r =>
-          r.instance_id === inst.id &&
-          r.node_id === nodeId &&
-          r.user_id === userId &&
-          (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT) &&
-          r.round === currentRound
-        );
-        if (!hasApproved) isTodo = true;
+      let delegateInfo = null;
+      
+      const approverInfo = getApproverForNode(inst, nodeId, userId);
+      if (approverInfo.isApprover) {
+        isTodo = true;
+        if (approverInfo.isDelegate) {
+          delegateInfo = {
+            is_delegate: true,
+            delegator_id: approverInfo.delegatorId,
+            delegator_name: approverInfo.delegatorName,
+            delegate_rule_id: approverInfo.delegateRuleId
+          };
+        }
       }
-      if (isTodo) {
-        todos.push({
+      
+      if (!isTodo && (node.type === NODE_TYPES.APPROVAL || node.type === NODE_TYPES.COUNTERSIGN) &&
+        (node.approvers || []).includes(userId)) {
+        if (approverInfo.isDelegated) {
+          delegateInfo = {
+            is_delegated: true,
+            agent_id: approverInfo.agentId,
+            agent_name: approverInfo.agentName
+          };
+        } else {
+          const hasApproved = data.records.some(r =>
+            r.instance_id === inst.id &&
+            r.node_id === nodeId &&
+            r.user_id === userId &&
+            (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT) &&
+            r.round === currentRound
+          );
+          if (!hasApproved) isTodo = true;
+        }
+      }
+      
+      if (isTodo || delegateInfo) {
+        const todoCreatedAt = getTodoCreatedAt(inst.id, nodeId, currentRound);
+        const todo = {
           instance_id: inst.id,
           document_title: inst.document_title,
           document_id: inst.document_id,
@@ -666,14 +752,153 @@ function listTodos(userId) {
           node_type: nodeType,
           template_id: template.id,
           template_name: template.name,
-          created_at: inst.created_at,
+          created_at: todoCreatedAt || inst.created_at,
           updated_at: inst.updated_at,
-          started_by: inst.created_by_name
-        });
+          started_by: inst.created_by_name,
+          delegate: delegateInfo,
+          is_todo: isTodo,
+          delegator_id: null,
+          delegator_name: null,
+          delegated_to_user_id: null,
+          delegated_to_user_name: null,
+          delegate_rule_id: null
+        };
+        
+        if (delegateInfo) {
+          if (delegateInfo.is_delegate) {
+            todo.delegator_id = delegateInfo.delegator_id;
+            todo.delegator_name = delegateInfo.delegator_name;
+            todo.delegate_rule_id = delegateInfo.delegate_rule_id;
+          } else if (delegateInfo.is_delegated) {
+            todo.delegated_to_user_id = delegateInfo.agent_id;
+            todo.delegated_to_user_name = delegateInfo.agent_name;
+          }
+        }
+        
+        todos.push(todo);
       }
     }
   }
   return todos.sort((a, b) => b.updated_at - a.updated_at);
+}
+
+function getTodoCreatedAt(instanceId, nodeId, round) {
+  const advanceRecord = data.records.find(r =>
+    r.instance_id === instanceId &&
+    r.node_id === nodeId &&
+    r.action === ACTION_TYPES.ADVANCE &&
+    r.round === round
+  );
+  return advanceRecord ? advanceRecord.created_at : null;
+}
+
+function processAutoDelegation(instance, node, round) {
+  const approvers = node.approvers || [];
+  const instanceId = instance.id;
+  const nodeId = node.id;
+  
+  for (const approverId of approvers) {
+    const delegation = findEffectiveDelegation(approverId);
+    if (!delegation) continue;
+    
+    const existingDelegate = data.records.some(r =>
+      r.instance_id === instanceId &&
+      r.node_id === nodeId &&
+      r.action === ACTION_TYPES.DELEGATE &&
+      r.user_id === approverId &&
+      r.round === round
+    );
+    
+    if (existingDelegate) continue;
+    
+    if (delegation.mode === DELEGATION_MODES.TIME_RANGE && isRuleEffective(delegation)) {
+      const { getUserName } = require('./permissionService');
+      addRecord(instanceId, nodeId, ACTION_TYPES.DELEGATE, {
+        userId: approverId,
+        userName: delegation.delegator_name || getUserName(approverId),
+        toUserId: delegation.agent_id,
+        toUserName: delegation.agent_name || getUserName(delegation.agent_id),
+        delegateRuleId: delegation.id,
+        comment: `时间段自动委托（${delegation.mode === DELEGATION_MODES.TIME_RANGE ? '生效中' : '超时未处理'}）`,
+        round
+      });
+    }
+  }
+}
+
+function checkTimeoutAndDelegate() {
+  loadData();
+  const { getUserName } = require('./permissionService');
+  const results = [];
+  
+  for (const inst of data.instances) {
+    if (inst.status !== APPROVAL_STATUS.PENDING) continue;
+    
+    const template = getTemplateById(inst.template_id, { reload: false });
+    if (!template) continue;
+    
+    const currentNodeIds = inst.current_node_ids || [];
+    const currentRound = inst.reject_round || 0;
+    
+    for (const nodeId of currentNodeIds) {
+      const node = template.nodes.find(n => n.id === nodeId);
+      if (!node || (node.type !== NODE_TYPES.APPROVAL && node.type !== NODE_TYPES.COUNTERSIGN)) continue;
+      
+      const approvers = node.approvers || [];
+      const todoCreatedAt = getTodoCreatedAt(inst.id, nodeId, currentRound);
+      
+      for (const approverId of approvers) {
+        const delegation = findEffectiveDelegation(approverId);
+        if (!delegation || delegation.mode !== DELEGATION_MODES.TIMEOUT) continue;
+        
+        const existingDelegate = data.records.some(r =>
+          r.instance_id === inst.id &&
+          r.node_id === nodeId &&
+          r.action === ACTION_TYPES.DELEGATE &&
+          r.user_id === approverId &&
+          r.round === currentRound
+        );
+        
+        if (existingDelegate) continue;
+        
+        const hasApproved = data.records.some(r =>
+          r.instance_id === inst.id &&
+          r.node_id === nodeId &&
+          r.user_id === approverId &&
+          (r.action === ACTION_TYPES.APPROVE || r.action === ACTION_TYPES.REJECT) &&
+          r.round === currentRound
+        );
+        
+        if (hasApproved) continue;
+        
+        if (shouldDelegateByTimeout(delegation, todoCreatedAt)) {
+          addRecord(inst.id, nodeId, ACTION_TYPES.DELEGATE, {
+            userId: approverId,
+            userName: delegation.delegator_name || getUserName(approverId),
+            toUserId: delegation.agent_id,
+            toUserName: delegation.agent_name || getUserName(delegation.agent_id),
+            delegateRuleId: delegation.id,
+            comment: `超时${delegation.timeout_hours}小时未处理，自动委托`,
+            round: currentRound
+          });
+          
+          results.push({
+            instance_id: inst.id,
+            node_id: nodeId,
+            delegator_id: approverId,
+            agent_id: delegation.agent_id,
+            rule_id: delegation.id
+          });
+        }
+      }
+    }
+  }
+  
+  if (results.length > 0) {
+    saveData();
+  }
+  
+  return results;
 }
 
 function createInstance({ templateId, documentId, documentTitle, metadata, createdBy, createdByName }) {
@@ -706,7 +931,7 @@ function createInstance({ templateId, documentId, documentTitle, metadata, creat
   return getInstanceById(instance.id, { reload: false });
 }
 
-function addRecord(instanceId, nodeId, action, { userId, userName, comment, toUserId, toUserName, rejectTargetNodeId, round }) {
+function addRecord(instanceId, nodeId, action, { userId, userName, comment, toUserId, toUserName, rejectTargetNodeId, round, delegatorId, delegatorName, delegateRuleId }) {
   const record = {
     id: data.nextRecordId++,
     instance_id: instanceId,
@@ -719,6 +944,9 @@ function addRecord(instanceId, nodeId, action, { userId, userName, comment, toUs
     to_user_name: toUserName || null,
     reject_target_node_id: rejectTargetNodeId || null,
     round: round !== undefined ? round : null,
+    delegator_id: delegatorId || null,
+    delegator_name: delegatorName || null,
+    delegate_rule_id: delegateRuleId || null,
     created_at: now()
   };
   data.records.push(record);
@@ -817,6 +1045,8 @@ function advanceToNextNodes(instIdx, template, fromNodeId, userId, userName) {
         comment: `进入${nextNode.type === NODE_TYPES.COUNTERSIGN ? '会签' : '审批'}节点: ${nextNode.name || nextNodeId}`,
         round: currentRound
       });
+      
+      processAutoDelegation(inst, nextNode, currentRound);
     }
   }
 
@@ -848,15 +1078,40 @@ function isNodeCompleted(instanceId, node, instance) {
 
   if (rejections.length > 0) return true;
 
+  const delegateRecords = records.filter(r => r.action === ACTION_TYPES.DELEGATE);
+  
+  const effectiveApproverIds = new Set(node.approvers || []);
+  delegateRecords.forEach(dr => {
+    if (effectiveApproverIds.has(dr.user_id)) {
+      effectiveApproverIds.delete(dr.user_id);
+      effectiveApproverIds.add(dr.to_user_id);
+    }
+  });
+
   if (node.type === NODE_TYPES.APPROVAL) {
-    return approvals.some(r => (node.approvers || []).includes(r.user_id));
+    return approvals.some(r => {
+      if (effectiveApproverIds.has(r.user_id)) return true;
+      if (r.delegator_id && effectiveApproverIds.has(r.delegator_id)) return true;
+      return false;
+    });
   }
 
   if (node.type === NODE_TYPES.COUNTERSIGN) {
     const approverIds = node.approvers || [];
-    return approverIds.every(approverId =>
-      approvals.some(a => a.user_id === approverId)
-    );
+    return approverIds.every(approverId => {
+      const hasDirectApproval = approvals.some(a => a.user_id === approverId);
+      if (hasDirectApproval) return true;
+      
+      const delegate = delegateRecords.find(d => d.user_id === approverId);
+      if (delegate) {
+        return approvals.some(a => 
+          a.user_id === delegate.to_user_id || 
+          (a.delegator_id === approverId && a.user_id === delegate.to_user_id)
+        );
+      }
+      
+      return false;
+    });
   }
 
   return false;
@@ -877,10 +1132,17 @@ function approveInstance(instanceId, nodeId, { userId, userName, comment }) {
   if (!template) return { error: '模板不存在', status: 404 };
   const node = template.nodes.find(n => n.id === nodeId);
   if (!node) return { error: '节点不存在', status: 404 };
-  if (!(node.approvers || []).includes(userId)) {
-    return { error: '您不是该节点的审批人', status: 403 };
-  }
+  
   const currentRound = inst.reject_round || 0;
+  
+  const approverInfo = getApproverForNode(inst, nodeId, userId);
+  const isApprover = (node.approvers || []).includes(userId);
+  const isDelegate = approverInfo.isApprover && approverInfo.isDelegate;
+  
+  if (!isApprover && !isDelegate) {
+    return { error: '您不是该节点的审批人或代理人', status: 403 };
+  }
+  
   const existingRecord = data.records.find(r =>
     r.instance_id === instanceId &&
     r.node_id === nodeId &&
@@ -892,7 +1154,14 @@ function approveInstance(instanceId, nodeId, { userId, userName, comment }) {
     return { error: '您已在此节点处理过', status: 400 };
   }
 
-  addRecord(instanceId, nodeId, ACTION_TYPES.APPROVE, { userId, userName, comment, round: currentRound });
+  const recordOptions = { userId, userName, comment, round: currentRound };
+  if (isDelegate) {
+    recordOptions.delegatorId = approverInfo.delegatorId;
+    recordOptions.delegatorName = approverInfo.delegatorName;
+    recordOptions.delegateRuleId = approverInfo.delegateRuleId;
+  }
+  
+  addRecord(instanceId, nodeId, ACTION_TYPES.APPROVE, recordOptions);
 
   if (isNodeCompleted(instanceId, node, inst)) {
     addRecord(instanceId, nodeId, ACTION_TYPES.AUTO_PASS, {
@@ -928,8 +1197,13 @@ function rejectInstance(instanceId, nodeId, { userId, userName, comment, targetN
   if (!template) return { error: '模板不存在', status: 404 };
   const node = template.nodes.find(n => n.id === nodeId);
   if (!node) return { error: '节点不存在', status: 404 };
-  if (!(node.approvers || []).includes(userId)) {
-    return { error: '您不是该节点的审批人', status: 403 };
+  
+  const approverInfo = getApproverForNode(inst, nodeId, userId);
+  const isApprover = (node.approvers || []).includes(userId);
+  const isDelegate = approverInfo.isApprover && approverInfo.isDelegate;
+  
+  if (!isApprover && !isDelegate) {
+    return { error: '您不是该节点的审批人或代理人', status: 403 };
   }
 
   let actualTargetNodeId = targetNodeId;
@@ -950,10 +1224,14 @@ function rejectInstance(instanceId, nodeId, { userId, userName, comment, targetN
   const newRound = oldRound + 1;
   inst.reject_round = newRound;
 
-  addRecord(instanceId, nodeId, ACTION_TYPES.REJECT, {
-    userId, userName, comment, rejectTargetNodeId: actualTargetNodeId,
-    round: oldRound
-  });
+  const recordOptions = { userId, userName, comment, rejectTargetNodeId: actualTargetNodeId, round: oldRound };
+  if (isDelegate) {
+    recordOptions.delegatorId = approverInfo.delegatorId;
+    recordOptions.delegatorName = approverInfo.delegatorName;
+    recordOptions.delegateRuleId = approverInfo.delegateRuleId;
+  }
+  
+  addRecord(instanceId, nodeId, ACTION_TYPES.REJECT, recordOptions);
 
   const targetNode = template.nodes.find(n => n.id === actualTargetNodeId);
   const targetName = targetNode ? (targetNode.name || targetNode.id) : actualTargetNodeId;
@@ -1002,15 +1280,24 @@ function transferInstance(instanceId, nodeId, { userId, userName, toUserId, toUs
   const nodeIdx = template.nodes.findIndex(n => n.id === nodeId);
   if (nodeIdx === -1) return { error: '节点不存在', status: 404 };
   const node = template.nodes[nodeIdx];
-  if (!(node.approvers || []).includes(userId)) {
-    return { error: '您不是该节点的审批人，无法转交', status: 403 };
+  
+  const approverInfo = getApproverForNode(inst, nodeId, userId);
+  const isApprover = (node.approvers || []).includes(userId);
+  const isDelegate = approverInfo.isApprover && approverInfo.isDelegate;
+  
+  if (!isApprover && !isDelegate) {
+    return { error: '您不是该节点的审批人或代理人，无法转交', status: 403 };
   }
 
   const currentRound = inst.reject_round || 0;
-  addRecord(instanceId, nodeId, ACTION_TYPES.TRANSFER, {
-    userId, userName, comment, toUserId, toUserName,
-    round: currentRound
-  });
+  const recordOptions = { userId, userName, comment, toUserId, toUserName, round: currentRound };
+  if (isDelegate) {
+    recordOptions.delegatorId = approverInfo.delegatorId;
+    recordOptions.delegatorName = approverInfo.delegatorName;
+    recordOptions.delegateRuleId = approverInfo.delegateRuleId;
+  }
+  
+  addRecord(instanceId, nodeId, ACTION_TYPES.TRANSFER, recordOptions);
 
   if (!node.approvers.includes(toUserId)) {
     template.nodes[nodeIdx].approvers.push(toUserId);
@@ -1060,5 +1347,9 @@ module.exports = {
   findNodePath,
   isUserTodo,
   generateId,
-  initDemoData
+  initDemoData,
+  delegateTodo,
+  checkTimeoutAndDelegate,
+  getApproverForNode,
+  getTodoCreatedAt
 };

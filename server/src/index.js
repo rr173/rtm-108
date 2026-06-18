@@ -143,8 +143,20 @@ const {
   transferInstance: transferApprovalInstance,
   listTodos: listApprovalTodos,
   getPrecedingNodes,
-  isUserTodo
+  isUserTodo,
+  checkTimeoutAndDelegate
 } = require('./approvalWorkflowService');
+
+const {
+  DELEGATION_MODES,
+  listRulesByDelegator,
+  listRulesByAgent,
+  getRuleById,
+  createRule,
+  updateRule,
+  deleteRule,
+  toggleRuleEnabled
+} = require('./delegationService');
 
 const { validateExpression } = require('./approvalExpressionParser');
 
@@ -2340,6 +2352,210 @@ app.get('/api/approval/todos', (req, res) => {
   }
 });
 
+app.post('/api/approval/check-timeout-delegation', (req, res) => {
+  try {
+    const results = checkTimeoutAndDelegate();
+    if (results.length > 0) {
+      results.forEach(r => {
+        wsService.notifyApprovalUpdate(r.instance_id, 'approval_delegated');
+        wsService.notifyTodosUpdate(r.delegator_id);
+        wsService.notifyTodosUpdate(r.agent_id);
+      });
+    }
+    res.json({ processed: results.length, results });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/approval/delegation-rules', (req, res) => {
+  try {
+    const userId = req.currentUser.id;
+    if (!userId) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    const rules = listRulesByDelegator(userId);
+    res.json(rules);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/approval/delegation-rules/as-agent', (req, res) => {
+  try {
+    const userId = req.currentUser.id;
+    if (!userId) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    const rules = listRulesByAgent(userId);
+    res.json(rules);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/approval/delegation-rules/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const rule = getRuleById(id);
+    if (!rule) {
+      return res.status(404).json({ error: '委托规则不存在' });
+    }
+    if (rule.delegator_id !== req.currentUser.id) {
+      return res.status(403).json({ error: '无权查看此规则' });
+    }
+    res.json(rule);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/approval/delegation-rules', (req, res) => {
+  try {
+    const userId = req.currentUser.id;
+    const userName = req.currentUser.name;
+    if (!userId) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    
+    const { agent_id, agent_name, mode, start_time, end_time, timeout_hours, enabled } = req.body;
+    
+    if (!agent_id) {
+      return res.status(400).json({ error: '缺少代理人ID' });
+    }
+    if (!mode) {
+      return res.status(400).json({ error: '缺少委托模式' });
+    }
+    
+    const result = createRule({
+      delegatorId: userId,
+      delegatorName: userName,
+      agentId: agent_id,
+      agentName: agent_name || agent_id,
+      mode,
+      startTime: start_time,
+      endTime: end_time,
+      timeoutHours: timeout_hours,
+      enabled: enabled !== false
+    });
+    
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    
+    res.status(201).json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/approval/delegation-rules/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const userId = req.currentUser.id;
+    if (!userId) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    
+    const existing = getRuleById(id);
+    if (!existing) {
+      return res.status(404).json({ error: '委托规则不存在' });
+    }
+    if (existing.delegator_id !== userId) {
+      return res.status(403).json({ error: '无权修改此规则' });
+    }
+    
+    const { agent_id, agent_name, mode, start_time, end_time, timeout_hours, enabled } = req.body;
+    
+    const result = updateRule(id, {
+      agentId: agent_id,
+      agentName: agent_name,
+      mode,
+      startTime: start_time,
+      endTime: end_time,
+      timeoutHours: timeout_hours,
+      enabled
+    });
+    
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    if (result === null) {
+      return res.status(404).json({ error: '委托规则不存在' });
+    }
+    
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/approval/delegation-rules/:id/toggle', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const userId = req.currentUser.id;
+    if (!userId) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    
+    const existing = getRuleById(id);
+    if (!existing) {
+      return res.status(404).json({ error: '委托规则不存在' });
+    }
+    if (existing.delegator_id !== userId) {
+      return res.status(403).json({ error: '无权修改此规则' });
+    }
+    
+    const { enabled } = req.body;
+    const result = toggleRuleEnabled(id, enabled);
+    
+    if (result && result.error) {
+      return res.status(result.status || 400).json({ error: result.error });
+    }
+    
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/approval/delegation-rules/:id', (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const userId = req.currentUser.id;
+    if (!userId) {
+      return res.status(401).json({ error: '需要登录' });
+    }
+    
+    const existing = getRuleById(id);
+    if (!existing) {
+      return res.status(404).json({ error: '委托规则不存在' });
+    }
+    if (existing.delegator_id !== userId) {
+      return res.status(403).json({ error: '无权删除此规则' });
+    }
+    
+    const success = deleteRule(id);
+    if (!success) {
+      return res.status(404).json({ error: '委托规则不存在' });
+    }
+    
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/approval/delegation-modes', (req, res) => {
+  res.json({
+    modes: Object.entries(DELEGATION_MODES).map(([key, value]) => ({
+      key,
+      value,
+      label: key === 'TIME_RANGE' ? '时间段模式' : '超时模式'
+    }))
+  });
+});
+
 app.get('/api/current-user', (req, res) => {
   res.json({
     user_id: req.currentUser.id,
@@ -3485,11 +3701,28 @@ setInterval(() => {
   }
 }, 60 * 1000);
 
+setInterval(() => {
+  try {
+    const results = checkTimeoutAndDelegate();
+    if (results.length > 0) {
+      console.log(`[超时委托] 自动处理 ${results.length} 个超时待办`);
+      results.forEach(r => {
+        wsService.notifyApprovalUpdate(r.instance_id, 'approval_delegated');
+        wsService.notifyTodosUpdate(r.delegator_id);
+        wsService.notifyTodosUpdate(r.agent_id);
+      });
+    }
+  } catch (e) {
+    console.error('超时委托检查出错:', e);
+  }
+}, 5 * 60 * 1000);
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`合同签署平台已启动: http://localhost:${PORT}`);
   console.log(`WebSocket 路径: ws://localhost:${PORT}/ws`);
   console.log(`催办定时器已启动 (每分钟检查一次)`);
+  console.log(`超时委托检查已启动 (每5分钟检查一次)`);
   console.log(`权限系统: 通过 X-User-Id header 传递用户标识`);
   console.log(`审计日志: 所有文档操作已记录，使用 SHA-256 哈希链防篡改`);
 });

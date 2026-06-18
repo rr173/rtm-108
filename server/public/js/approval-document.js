@@ -148,6 +148,13 @@ function renderActionPanel() {
     const isMyTodo = myTodoNodes.some(t => t.node.id === nid);
     const records = currentInstance.records || [];
     const myRecord = records.find(r => r.node_id === nid && r.user_id === userId);
+    
+    const delegatedRecords = records.filter(r => 
+      r.node_id === nid && 
+      r.delegator_id && 
+      r.delegator_id !== r.user_id &&
+      (r.action === 'approve' || r.action === 'reject')
+    );
 
     html += `
       <div class="current-node-card" style="${isMyTodo ? '' : 'opacity:0.7; background:#f8fafc; border-color:#cbd5e1;'}">
@@ -161,11 +168,21 @@ function renderActionPanel() {
             const done = records.some(r => r.node_id === nid && r.user_id === aid && (r.action === 'approve' || r.action === 'reject'));
             const isMe = aid === userId;
             const name = getUserDisplayName(aid);
-            return `<span style="padding:1px 6px; border-radius:4px; margin:0 2px; background:${done ? '#dcfce7; color:#166534;' : (isMe && isMyTodo ? '#fef3c7; color:#92400e;' : '#f1f5f9; color:#475569;')} font-weight:${isMe ? 600 : 500};">${done ? '✓ ' : ''}${escapeHtml(name)}</span>`;
+            const delegated = delegatedRecords.find(r => r.delegator_id === aid);
+            let displayName = escapeHtml(name);
+            if (delegated) {
+              displayName = `${escapeHtml(name)} <span class="delegation-badge" title="已委托给 ${escapeHtml(delegated.user_name)} 代签">🤝 已委托</span>`;
+            }
+            return `<span style="padding:1px 6px; border-radius:4px; margin:0 2px; background:${done ? '#dcfce7; color:#166534;' : (isMe && isMyTodo ? '#fef3c7; color:#92400e;' : '#f1f5f9; color:#475569;')} font-weight:${isMe ? 600 : 500};">${done ? '✓ ' : ''}${displayName}</span>`;
           }).join('')}
         </div>
         ${renderCountersignProgress(node, nid)}
         ${myRecord ? `<div style="margin-top:8px; padding:6px 10px; background:#fff; border-radius:6px; font-size:12px; color:#64748b;">您已: <strong style="color:${myRecord.action === 'approve' ? '#16a34a' : '#dc2626'};">${myRecord.action === 'approve' ? '通过' : '驳回'}</strong>${myRecord.comment ? ` - ${escapeHtml(myRecord.comment)}` : ''}</div>` : ''}
+        ${delegatedRecords.length > 0 ? `
+          <div style="margin-top:8px; padding:6px 10px; background:#fef3c7; border-radius:6px; font-size:11px; color:#92400e; border-left:3px solid #f59e0b;">
+            🤝 代签信息：${delegatedRecords.map(r => `${escapeHtml(r.delegator_name)} 委托 ${escapeHtml(r.user_name)} 代签`).join('；')}
+          </div>
+        ` : ''}
       </div>
     `;
   }
@@ -367,6 +384,13 @@ function renderTimeline() {
     const nodeName = node ? (node.name || getNodeTypeLabel(node.type)) : '';
 
     let content = `<strong>${escapeHtml(r.user_name || '系统')}</strong>`;
+    let delegationHtml = '';
+    
+    if (r.delegator_id && r.delegator_id !== r.user_id) {
+      content = `<strong>${escapeHtml(r.user_name || '系统')}</strong> <span class="delegation-badge"><span class="delegation-icon">🤝</span>代签</span>`;
+      delegationHtml = `<div class="timeline-delegation">📝 委托来源：${escapeHtml(r.delegator_name || r.delegator_id)}</div>`;
+    }
+    
     if (r.action === 'start') content += ` 启动了审批流程`;
     else if (r.action === 'advance') content += ` ${escapeHtml(r.comment || '')}`;
     else if (r.action === 'approve') content += ` 审批通过` + (nodeName ? `「${escapeHtml(nodeName)}」` : '');
@@ -390,6 +414,7 @@ function renderTimeline() {
           </div>
           <span>${timeAgo(r.created_at)}</span>
         </div>
+        ${delegationHtml}
         ${r.comment && r.action !== 'advance' && r.action !== 'auto_pass' && r.action !== 'start' ? `<div class="timeline-comment">💬 ${escapeHtml(r.comment)}</div>` : ''}
       </div>
     `;

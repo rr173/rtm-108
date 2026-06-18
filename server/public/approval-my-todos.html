@@ -60,6 +60,13 @@
   .instance-list { padding: 0; }
   .instance-item { padding: 14px 18px; border-bottom: 1px solid #f8fafc; display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; transition: background 0.15s; }
   .instance-item:hover { background: #f8fafc; }
+  .todo-item.delegated { background: linear-gradient(90deg, #fef3c7 0%, transparent 60px); border-left: 3px solid #f59e0b; }
+  .todo-item.delegated:hover { background: linear-gradient(90deg, #fde68a 0%, #fafbff 60px); }
+  .delegated-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; background: #fef3c7; color: #92400e; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .delegated-tooltip { position: absolute; background: #1e293b; color: #fff; padding: 8px 12px; border-radius: 6px; font-size: 12px; z-index: 100; pointer-events: none; opacity: 0; transition: opacity 0.2s; white-space: nowrap; }
+  .has-delegated-tooltip:hover .delegated-tooltip { opacity: 1; }
+  .todo-item.delegated-away { opacity: 0.6; background: #f1f5f9; }
+  .delegated-away-tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; background: #e0e7ff; color: #4f46e5; border-radius: 12px; font-size: 11px; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -90,6 +97,15 @@
       <button class="tab-btn active" data-tab="todo">🎯 待我审批</button>
       <button class="tab-btn" data-tab="my">📤 我发起的</button>
       <button class="tab-btn" data-tab="all">📋 全部审批</button>
+    </div>
+  </div>
+
+  <div id="subTabsContainer" style="margin-bottom:14px; display:none;">
+    <div class="tabs" id="subTabs">
+      <button class="tab-btn active" data-subtab="all">全部待办</button>
+      <button class="tab-btn" data-subtab="normal">正常待办</button>
+      <button class="tab-btn" data-subtab="delegated">待我代签</button>
+      <button class="tab-btn" data-subtab="delegated-away">已转出待办</button>
     </div>
   </div>
 

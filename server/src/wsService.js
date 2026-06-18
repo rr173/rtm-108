@@ -558,6 +558,25 @@ class WsService {
     });
   }
 
+  notifyTodosUpdate(userId) {
+    if (!userId) return;
+    const key = String(userId);
+    if (!this.todoSubscriptions.has(key)) return;
+    
+    const todos = listTodos(userId);
+    const message = JSON.stringify({
+      type: 'todos_updated',
+      userId,
+      todos
+    });
+    
+    this.todoSubscriptions.get(key).forEach(ws => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(message);
+      }
+    });
+  }
+
   subscribeAnnotations(ws, documentId) {
     const docId = parseInt(documentId);
     if (!this.annotationSubscriptions.has(docId)) {

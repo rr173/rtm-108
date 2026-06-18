@@ -3,13 +3,14 @@ let currentUserName = getUserDisplayName(currentUserId);
 let currentTab = 'overview';
 let templatesCache = [];
 let instancesCache = [];
+let delegationRulesCache = [];
 
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.nav-tab').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tab === tab);
   });
-  ['overview', 'templates', 'instances', 'todos'].forEach(t => {
+  ['overview', 'templates', 'instances', 'todos', 'delegation'].forEach(t => {
     document.getElementById(`tab-${t}`).style.display = t === tab ? '' : 'none';
   });
   renderCurrentTab();
@@ -21,14 +22,16 @@ function renderCurrentTab() {
     case 'templates': renderTemplates(); break;
     case 'instances': renderInstances(); break;
     case 'todos': renderTodos(); break;
+    case 'delegation': renderDelegation(); break;
   }
 }
 
 async function loadAllData() {
   try {
-    [templatesCache, instancesCache] = await Promise.all([
+    [templatesCache, instancesCache, delegationRulesCache] = await Promise.all([
       ApprovalAPI.listTemplates(),
-      ApprovalAPI.listInstances()
+      ApprovalAPI.listInstances(),
+      ApprovalAPI.getDelegationRules()
     ]);
     renderCurrentTab();
   } catch (e) {
@@ -459,6 +462,402 @@ function renderInstancesList() {
       </div>
     `;
   }).join('');
+}
+
+function getDelegationModeLabel(mode) {
+  return mode === 'time_range' ? '时间段' : mode === 'timeout' ? '超时自动' : mode;
+}
+
+function getDelegationModeColor(mode) {
+  return mode === 'time_range' ? 'background:#dbeafe;color:#1d4ed8;' : 'background:#fef3c7;color:#92400e;';
+}
+
+function formatDateTime(str) {
+  if (!str) return '-';
+  return new Date(str).toLocaleString('zh-CN', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+  });
+}
+
+function renderDelegation() {
+  const rules = delegationRulesCache || [];
+  const myRules = rules;
+  const users = getDemoUsers().filter(u => u.id !== currentUserId);
+  
+  const container = document.getElementById('tab-delegation');
+  container.innerHTML = `
+    <div style="margin-bottom:20px;">
+      <div class="top-banner">
+        <div>
+          <h2 style="margin:0 0 6px; font-size:20px; color:#1e293b;">🔄 审批委托</h2>
+          <p style="margin:0; font-size:13px; color:#64748b;">设置委托规则，将您的审批权临时交给他人代签</p>
+        </div>
+        <button class="btn primary" onclick="openCreateDelegationModal()">+ 新建委托规则</button>
+      </div>
+      
+      <div class="demo-tip" style="margin-bottom:20px;">
+        ℹ️ <strong>说明：</strong> 时间段模式：在指定时间内新到待办自动转给代理人。超时模式：待办超过 N 小时未处理自动转给代理人。委托不能形成环。
+      </div>
+    </div>
+    
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+      <div>
+        <h3 style="margin:0 0 14px; font-size:16px; color:#1e293b;">📤 我发起的委托</h3>
+        ${myRules.length === 0 ? `
+          <div class="empty-state">
+            <div class="empty-icon">📭</div>
+            <div>暂无委托规则</div>
+          </div>
+        ` : `
+          <div class="card-list">
+            ${myRules.map(rule => `
+              <div class="data-card" style="${!rule.enabled ? 'opacity:0.6;' : ''}">
+                <div style="display:flex; justify-content:space-between; align-items:start; margin-bottom:10px;">
+                  <div style="flex:1;">
+                    <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+                      <span class="tag" style="${getDelegationModeColor(rule.mode)}">${getDelegationModeLabel(rule.mode)}</span>
+                      <span style="font-size:13px; color:#64748b;">
+                        ${rule.mode === 'time_range' 
+                          ? `${formatDateTime(rule.start_time)} 至 ${formatDateTime(rule.end_time)}`
+                          : `超时 ${rule.timeout_hours} 小时`}
+                      </span>
+                      <label class="switch" style="margin-left:auto;">
+                        <input type="checkbox" ${rule.enabled ? 'checked' : ''} 
+                          onchange="toggleDelegationRule(${rule.id}, this.checked)">
+                        <span class="slider"></span>
+                      </label>
+                    </div>
+                    <div style="font-size:14px; color:#334155; margin-bottom:4px;">
+                      委托给：<strong style="color:#1e293b;">${getUserDisplayName(rule.agent_id)}</strong>
+                    </div>
+                    ${rule.remark ? `<div style="font-size:12px; color:#94a3b8;">${rule.remark}</div>` : ''}
+                    ${rule.is_effective 
+                      ? `<div style="font-size:12px; color:#059669; margin-top:6px;">✅ 当前生效中</div>` 
+                      : rule.enabled 
+                        ? `<div style="font-size:12px; color:#f59e0b; margin-top:6px;">⏰ 未到生效时间</div>`
+                        : `<div style="font-size:12px; color:#94a3b8; margin-top:6px;">🔘 已停用</div>`}
+                  </div>
+                  <div class="action-btns" style="margin-left:10px;">
+                    <button class="mini-btn" onclick="openEditDelegationModal(${rule.id})">编辑</button>
+                    <button class="mini-btn danger" onclick="deleteDelegationRule(${rule.id})">删除</button>
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `}
+      </div>
+      
+      <div>
+        <h3 style="margin:0 0 14px; font-size:16px; color:#1e293b;">📥 我作为代理人</h3>
+        <div id="asAgentRulesContainer">
+          <div class="empty-state">
+            <div class="empty-icon">⏳</div>
+            <div>加载中...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  loadAsAgentRules();
+}
+
+async function loadAsAgentRules() {
+  try {
+    const rules = await ApprovalAPI.getDelegationRulesAsAgent();
+    const container = document.getElementById('asAgentRulesContainer');
+    if (!container) return;
+    
+    if (rules.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">🤝</div>
+          <div>暂无他人委托给您的规则</div>
+        </div>
+      `;
+      return;
+    }
+    
+    container.innerHTML = `
+      <div class="card-list">
+        ${rules.map(rule => `
+          <div class="data-card" style="${!rule.enabled || !rule.is_effective ? 'opacity:0.6;' : ''}">
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+              <span class="tag" style="${getDelegationModeColor(rule.mode)}">${getDelegationModeLabel(rule.mode)}</span>
+              ${rule.enabled && rule.is_effective 
+                ? '<span class="tag" style="background:#dcfce7;color:#166534;">生效中</span>' 
+                : '<span class="tag" style="background:#f1f5f9;color:#64748b;">未生效</span>'}
+            </div>
+            <div style="font-size:14px; color:#334155; margin-bottom:4px;">
+              委托人：<strong style="color:#1e293b;">${getUserDisplayName(rule.delegator_id)}</strong>
+            </div>
+            <div style="font-size:12px; color:#64748b;">
+              ${rule.mode === 'time_range' 
+                ? `${formatDateTime(rule.start_time)} 至 ${formatDateTime(rule.end_time)}`
+                : `待办超时 ${rule.timeout_hours} 小时后自动转给您`}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  } catch (e) {
+    console.error('加载作为代理人的规则失败:', e);
+  }
+}
+
+function openCreateDelegationModal() {
+  const users = getDemoUsers().filter(u => u.id !== currentUserId);
+  const now = new Date();
+  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const nextWeek = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  
+  const html = `
+    <div class="modal-overlay" onclick="closeModal()">
+      <div class="modal" onclick="event.stopPropagation()">
+        <div class="modal-header">
+          <h3 style="margin:0; font-size:18px;">新建委托规则</h3>
+          <button class="close-btn" onclick="closeModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">代理人 *</label>
+            <select class="form-select" id="delegationAgentId">
+              <option value="">请选择代理人</option>
+              ${users.map(u => `<option value="${u.id}">${u.name}</option>`).join('')}
+            </select>
+          </div>
+          
+          <div class="form-group">
+            <label class="form-label">生效模式 *</label>
+            <div style="display:flex; gap:12px;">
+              <label style="flex:1; padding:12px; border:2px solid #e2e8f0; border-radius:8px; cursor:pointer; transition:all 0.2s;">
+                <input type="radio" name="delegationMode" value="time_range" checked onchange="toggleDelegationModeFields()">
+                <span style="margin-left:8px; font-weight:500;">⏰ 时间段</span>
+                <div style="font-size:12px; color:#64748b; margin-top:4px;">在指定时间内，新到待办自动转给代理人</div>
+              </label>
+              <label style="flex:1; padding:12px; border:2px solid #e2e8f0; border-radius:8px; cursor:pointer; transition:all 0.2s;">
+                <input type="radio" name="delegationMode" value="timeout" onchange="toggleDelegationModeFields()">
+                <span style="margin-left:8px; font-weight:500;">⌛ 超时自动</span>
+                <div style="font-size:12px; color:#64748b; margin-top:4px;">待办超过 N 小时未处理，自动转给代理人</div>
+              </label>
+            </div>
+          </div>
+          
+          <div id="timeRangeFields">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+              <div class="form-group">
+                <label class="form-label">开始时间 *</label>
+                <input type="datetime-local" class="form-input" id="delegationStartTime" 
+                  value="${now.toISOString().slice(0, 16)}">
+              </div>
+              <div class="form-group">
+                <label class="form-label">结束时间 *</label>
+                <input type="datetime-local" class="form-input" id="delegationEndTime" 
+                  value="${nextWeek.toISOString().slice(0, 16)}">
+              </div>
+            </div>
+          </div>
+          
+          <div id="timeoutFields" style="display:none;">
+            <div class="form-group">
+              <label class="form-label">超时时间（小时）*</label>
+              <input type="number" class="form-input" id="delegationTimeoutHours" 
+                value="24" min="1" max="720" placeholder="请输入超时小时数">
+            </div>
+          </div>
+          
+          <div class="form-group">
+            <label class="form-label">备注（可选）</label>
+            <textarea class="form-textarea" id="delegationRemark" placeholder="比如：请假一周，请帮忙处理审批"></textarea>
+          </div>
+          
+          <div class="form-group">
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="delegationEnabled" checked>
+              <span style="font-size:13px;">立即启用</span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" onclick="closeModal()">取消</button>
+          <button class="btn primary" onclick="submitDelegationRule()">创建</button>
+        </div>
+      </div>
+    </div>
+  `;
+  showModal(html);
+}
+
+function openEditDelegationModal(ruleId) {
+  const rule = delegationRulesCache.find(r => r.id === ruleId);
+  if (!rule) return;
+  
+  const users = getDemoUsers().filter(u => u.id !== currentUserId);
+  
+  const html = `
+    <div class="modal-overlay" onclick="closeModal()">
+      <div class="modal" onclick="event.stopPropagation()">
+        <div class="modal-header">
+          <h3 style="margin:0; font-size:18px;">编辑委托规则</h3>
+          <button class="close-btn" onclick="closeModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">代理人 *</label>
+            <select class="form-select" id="delegationAgentId">
+              <option value="">请选择代理人</option>
+              ${users.map(u => `<option value="${u.id}" ${u.id === rule.agent_id ? 'selected' : ''}>${u.name}</option>`).join('')}
+            </select>
+          </div>
+          
+          <div class="form-group">
+            <label class="form-label">生效模式 *</label>
+            <div style="display:flex; gap:12px;">
+              <label style="flex:1; padding:12px; border:2px solid #e2e8f0; border-radius:8px; cursor:pointer; transition:all 0.2s;">
+                <input type="radio" name="delegationMode" value="time_range" 
+                  ${rule.mode === 'time_range' ? 'checked' : ''} onchange="toggleDelegationModeFields()">
+                <span style="margin-left:8px; font-weight:500;">⏰ 时间段</span>
+                <div style="font-size:12px; color:#64748b; margin-top:4px;">在指定时间内，新到待办自动转给代理人</div>
+              </label>
+              <label style="flex:1; padding:12px; border:2px solid #e2e8f0; border-radius:8px; cursor:pointer; transition:all 0.2s;">
+                <input type="radio" name="delegationMode" value="timeout" 
+                  ${rule.mode === 'timeout' ? 'checked' : ''} onchange="toggleDelegationModeFields()">
+                <span style="margin-left:8px; font-weight:500;">⌛ 超时自动</span>
+                <div style="font-size:12px; color:#64748b; margin-top:4px;">待办超过 N 小时未处理，自动转给代理人</div>
+              </label>
+            </div>
+          </div>
+          
+          <div id="timeRangeFields" style="${rule.mode !== 'time_range' ? 'display:none;' : ''}">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+              <div class="form-group">
+                <label class="form-label">开始时间 *</label>
+                <input type="datetime-local" class="form-input" id="delegationStartTime" 
+                  value="${rule.start_time ? new Date(rule.start_time).toISOString().slice(0, 16) : ''}">
+              </div>
+              <div class="form-group">
+                <label class="form-label">结束时间 *</label>
+                <input type="datetime-local" class="form-input" id="delegationEndTime" 
+                  value="${rule.end_time ? new Date(rule.end_time).toISOString().slice(0, 16) : ''}">
+              </div>
+            </div>
+          </div>
+          
+          <div id="timeoutFields" style="${rule.mode !== 'timeout' ? 'display:none;' : ''}">
+            <div class="form-group">
+              <label class="form-label">超时时间（小时）*</label>
+              <input type="number" class="form-input" id="delegationTimeoutHours" 
+                value="${rule.timeout_hours || 24}" min="1" max="720" placeholder="请输入超时小时数">
+            </div>
+          </div>
+          
+          <div class="form-group">
+            <label class="form-label">备注（可选）</label>
+            <textarea class="form-textarea" id="delegationRemark" placeholder="比如：请假一周，请帮忙处理审批">${rule.remark || ''}</textarea>
+          </div>
+          
+          <div class="form-group">
+            <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+              <input type="checkbox" id="delegationEnabled" ${rule.enabled ? 'checked' : ''}>
+              <span style="font-size:13px;">启用规则</span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" onclick="closeModal()">取消</button>
+          <button class="btn primary" onclick="submitDelegationRule(${ruleId})">保存</button>
+        </div>
+      </div>
+    </div>
+  `;
+  showModal(html);
+}
+
+function toggleDelegationModeFields() {
+  const mode = document.querySelector('input[name="delegationMode"]:checked').value;
+  document.getElementById('timeRangeFields').style.display = mode === 'time_range' ? '' : 'none';
+  document.getElementById('timeoutFields').style.display = mode === 'timeout' ? '' : 'none';
+}
+
+async function submitDelegationRule(editId = null) {
+  try {
+    const agentId = document.getElementById('delegationAgentId').value;
+    const mode = document.querySelector('input[name="delegationMode"]:checked').value;
+    const enabled = document.getElementById('delegationEnabled').checked;
+    const remark = document.getElementById('delegationRemark').value.trim();
+    
+    if (!agentId) {
+      showToast('请选择代理人', 'error');
+      return;
+    }
+    
+    const ruleData = {
+      agent_id: agentId,
+      agent_name: getUserDisplayName(agentId),
+      mode,
+      enabled,
+      remark
+    };
+    
+    if (mode === 'time_range') {
+      const startTime = document.getElementById('delegationStartTime').value;
+      const endTime = document.getElementById('delegationEndTime').value;
+      if (!startTime || !endTime) {
+        showToast('请填写完整的时间范围', 'error');
+        return;
+      }
+      if (new Date(startTime) >= new Date(endTime)) {
+        showToast('结束时间必须晚于开始时间', 'error');
+        return;
+      }
+      ruleData.start_time = startTime;
+      ruleData.end_time = endTime;
+    } else {
+      const timeoutHours = parseInt(document.getElementById('delegationTimeoutHours').value);
+      if (!timeoutHours || timeoutHours < 1) {
+        showToast('请填写有效的超时小时数', 'error');
+        return;
+      }
+      ruleData.timeout_hours = timeoutHours;
+    }
+    
+    if (editId) {
+      await ApprovalAPI.updateDelegationRule(editId, ruleData);
+      showToast('规则已更新', 'success');
+    } else {
+      await ApprovalAPI.createDelegationRule(ruleData);
+      showToast('规则已创建', 'success');
+    }
+    
+    closeModal();
+    loadAllData();
+  } catch (e) {
+    showToast(e.message || '操作失败', 'error');
+  }
+}
+
+async function toggleDelegationRule(ruleId, enabled) {
+  try {
+    await ApprovalAPI.toggleDelegationRule(ruleId, enabled);
+    showToast(enabled ? '规则已启用' : '规则已停用', 'success');
+    loadAllData();
+  } catch (e) {
+    showToast(e.message || '操作失败', 'error');
+    loadAllData();
+  }
+}
+
+async function deleteDelegationRule(ruleId) {
+  if (!confirm('确定要删除这条委托规则吗？')) return;
+  
+  try {
+    await ApprovalAPI.deleteDelegationRule(ruleId);
+    showToast('规则已删除', 'success');
+    loadAllData();
+  } catch (e) {
+    showToast(e.message || '删除失败', 'error');
+  }
 }
 
 function renderTodos() {

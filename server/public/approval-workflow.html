@@ -49,6 +49,12 @@
   .meta-field input { flex: 1; }
   .chip-remove { margin-left: 4px; opacity: 0.6; cursor: pointer; font-weight: bold; }
   .chip-remove:hover { opacity: 1; }
+  .switch { position: relative; display: inline-block; width: 38px; height: 22px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #cbd5e1; transition: 0.3s; border-radius: 22px; }
+  .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background-color: white; transition: 0.3s; border-radius: 50%; }
+  input:checked + .slider { background-color: #3b82f6; }
+  input:checked + .slider:before { transform: translateX(16px); }
 </style>
 </head>
 <body>
@@ -82,12 +88,14 @@
     <button class="nav-tab" data-tab="templates">📐 审批模板</button>
     <button class="nav-tab" data-tab="instances">📑 审批实例</button>
     <button class="nav-tab" data-tab="todos">✅ 我的待办</button>
+    <button class="nav-tab" data-tab="delegation">🔄 审批委托</button>
   </div>
 
   <div id="tab-overview"></div>
   <div id="tab-templates" style="display:none;"></div>
   <div id="tab-instances" style="display:none;"></div>
   <div id="tab-todos" style="display:none;"></div>
+  <div id="tab-delegation" style="display:none;"></div>
 </div>
 
 <div id="modalContainer"></div>

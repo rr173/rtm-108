@@ -49,7 +49,17 @@ const ApprovalAPI = {
 
   getTodos() { return this.get('/api/approval/todos'); },
 
-  getCurrentUser() { return this.get('/api/current-user'); }
+  getCurrentUser() { return this.get('/api/current-user'); },
+
+  getDelegationRules() { return this.get('/api/approval/delegation-rules'); },
+  getDelegationRulesAsAgent() { return this.get('/api/approval/delegation-rules/as-agent'); },
+  getDelegationRule(id) { return this.get(`/api/approval/delegation-rules/${id}`); },
+  createDelegationRule(data) { return this.post('/api/approval/delegation-rules', data); },
+  updateDelegationRule(id, data) { return this.put(`/api/approval/delegation-rules/${id}`, data); },
+  toggleDelegationRule(id, enabled) { return this.put(`/api/approval/delegation-rules/${id}/toggle`, { enabled }); },
+  deleteDelegationRule(id) { return this.del(`/api/approval/delegation-rules/${id}`); },
+  getDelegationModes() { return this.get('/api/approval/delegation-modes'); },
+  checkTimeoutDelegation() { return this.post('/api/approval/check-timeout-delegation'); }
 };
 
 let ws = null;
