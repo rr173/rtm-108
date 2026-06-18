@@ -45,7 +45,38 @@
           <h3 style="margin: 0; font-size: 15px;">版本时间线</h3>
           <span id="docTitle" class="doc-title-small"></span>
         </div>
-        <div id="versionTimeline" class="version-timeline">
+        <div class="branch-tabs" style="margin-bottom: 12px;">
+          <button class="branch-tab active" onclick="switchToMainLine()">🟢 主线</button>
+          <button class="branch-tab" onclick="showBranchList()">🌿 分支</button>
+        </div>
+        <div id="mainTimeline" class="version-timeline">
+        </div>
+        <div id="branchListPanel" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <span style="font-size: 13px; font-weight: 600;">分支列表</span>
+            <button class="btn btn-primary btn-sm" onclick="showCreateBranchModal()">+ 新建分支</button>
+          </div>
+          <div id="branchList" class="branch-list">
+            <div class="empty-state-small">加载中...</div>
+          </div>
+        </div>
+        <div id="branchDetailPanel" style="display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <button class="btn btn-secondary btn-sm" onclick="backToBranchList()">← 返回</button>
+            <span id="currentBranchName" style="font-size: 13px; font-weight: 600;"></span>
+          </div>
+          <div id="branchInfo" class="branch-info">
+          </div>
+          <div id="branchVersionTimeline" class="version-timeline branch-version-timeline">
+          </div>
+          <div style="margin-top: 12px; display: flex; gap: 8px;">
+            <button id="editBranchBtn" class="btn btn-primary btn-sm" style="flex: 1;" onclick="showEditBranchModal()">✏️ 编辑分支</button>
+            <button id="mergeBranchBtn" class="btn btn-success btn-sm" style="flex: 1;" onclick="previewBranchMerge()">🔀 合并到主线</button>
+          </div>
+          <div style="margin-top: 8px; display: flex; gap: 8px;">
+            <button id="abandonBranchBtn" class="btn btn-warning btn-sm" style="flex: 1;" onclick="abandonBranch()">⛔ 废弃分支</button>
+            <button id="deleteBranchBtn" class="btn btn-danger btn-sm" style="flex: 1;" onclick="deleteBranch()">🗑️ 删除</button>
+          </div>
         </div>
         <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #eee;">
           <div style="margin-bottom: 8px; font-size: 13px; color: #666;">
@@ -384,6 +415,108 @@
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="hideAddCollaboratorModal()">取消</button>
         <button class="btn btn-primary" onclick="addCollaborator()">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="createBranchModal" class="modal-overlay" onclick="closeModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width: 500px;">
+      <h3 class="modal-title">🌿 创建新分支</h3>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">分支名称</label>
+        <input type="text" id="newBranchName" placeholder="如：实验性修改、评审修订稿"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">描述（可选）</label>
+        <input type="text" id="newBranchDesc" placeholder="简要描述分支用途"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">基准版本</label>
+        <select id="newBranchBaseVersion" style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+        </select>
+      </div>
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">创建人</label>
+        <input type="text" id="newBranchCreator" placeholder="请输入你的名字"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideCreateBranchModal()">取消</button>
+        <button class="btn btn-primary" onclick="createBranch()">创建分支</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="editBranchModal" class="modal-overlay" onclick="closeModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation()" style="max-width: 700px; max-height: 90vh; display: flex; flex-direction: column;">
+      <h3 class="modal-title">✏️ 编辑分支</h3>
+      <div style="margin-bottom: 15px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">提交说明（可选）</label>
+        <input type="text" id="editBranchCommitMsg" placeholder="简要描述本次修改"
+               style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+      </div>
+      <div style="margin-bottom: 20px; flex: 1; display: flex; flex-direction: column; min-height: 300px;">
+        <label style="display: block; margin-bottom: 6px; font-size: 14px; color: #666;">分支内容</label>
+        <textarea id="editBranchContent" rows="15"
+                  style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 13px; font-family: monospace; resize: vertical; flex: 1;"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideEditBranchModal()">取消</button>
+        <button class="btn btn-primary" onclick="saveBranchEdit()">保存新版本</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="threeWayMergeModal" class="modal-overlay" onclick="closeModalOutside(event)">
+    <div class="modal three-way-merge-modal" onclick="event.stopPropagation()">
+      <h3 class="modal-title">🔀 三方合并 - 冲突解决</h3>
+      <div style="margin-bottom: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <span id="mergeProgressText" style="font-size: 13px; color: #666;">冲突 1 / 1</span>
+          <span id="mergeConflictCount" class="conflict-count-badge">1 个冲突</span>
+        </div>
+        <div class="conflict-nav">
+          <button class="conflict-nav-btn" onclick="prevConflict()" id="prevConflictBtn">← 上一个</button>
+          <button class="conflict-nav-btn" onclick="nextConflict()" id="nextConflictBtn">下一个 →</button>
+        </div>
+      </div>
+      <div class="three-way-container">
+        <div class="three-way-pane three-way-left">
+          <div class="three-way-pane-header">
+            <span class="pane-dot main-dot"></span>
+            <span>主线最新版本</span>
+          </div>
+          <div class="three-way-pane-content" id="mergeMainContent"></div>
+          <button class="conflict-choose-btn" onclick="chooseMainVersion()">← 采纳主线</button>
+        </div>
+        <div class="three-way-pane three-way-middle">
+          <div class="three-way-pane-header">
+            <span class="pane-dot base-dot"></span>
+            <span>基准版本（分支起点）</span>
+          </div>
+          <div class="three-way-pane-content" id="mergeBaseContent"></div>
+        </div>
+        <div class="three-way-pane three-way-right">
+          <div class="three-way-pane-header">
+            <span class="pane-dot branch-dot"></span>
+            <span>分支最新版本</span>
+          </div>
+          <div class="three-way-pane-content" id="mergeBranchContent"></div>
+          <button class="conflict-choose-btn" onclick="chooseBranchVersion()">采纳分支 →</button>
+        </div>
+      </div>
+      <div style="margin-top: 16px;">
+        <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">合并结果预览</div>
+        <textarea class="merge-result-editor" id="mergeResultEditor" rows="6"></textarea>
+        <div style="margin-top: 6px; font-size: 12px; color: #888;">
+          提示：可手动编辑合并结果
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="hideThreeWayMergeModal()">取消</button>
+        <button class="btn btn-success" onclick="executeBranchMerge()">✓ 完成合并</button>
       </div>
     </div>
   </div>

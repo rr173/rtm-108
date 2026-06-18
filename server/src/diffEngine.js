@@ -344,9 +344,341 @@ function computeStats(diffResult) {
   return { added, deleted, modified, unchanged };
 }
 
+function threeWayMerge(baseText, mineText, theirsText) {
+  const baseLines = baseText.split('\n');
+  const mineLines = mineText.split('\n');
+  const theirsLines = theirsText.split('\n');
+
+  const mineDiff = lineDiffToArray(baseLines, mineLines);
+  const theirsDiff = lineDiffToArray(baseLines, theirsLines);
+
+  const result = [];
+  const conflicts = [];
+
+  let baseIdx = 0;
+  let mineIdx = 0;
+  let theirsIdx = 0;
+
+  while (baseIdx < baseLines.length || mineIdx < mineDiff.length || theirsIdx < theirsDiff.length) {
+    const mineOp = mineDiff[mineIdx];
+    const theirsOp = theirsDiff[theirsIdx];
+
+    const mineBaseLine = mineOp ? mineOp.baseLine : Infinity;
+    const theirsBaseLine = theirsOp ? theirsOp.baseLine : Infinity;
+
+    if (mineOp && mineOp.type === 'unchanged' && (!theirsOp || theirsOp.type !== 'conflict-start')) {
+      while (baseIdx < baseLines.length && 
+             (mineIdx >= mineDiff.length || mineDiff[mineIdx]?.type === 'unchanged' || mineDiff[mineIdx]?.baseLine > baseIdx) &&
+             (theirsIdx >= theirsDiff.length || theirsDiff[theirsIdx]?.type === 'unchanged' || theirsDiff[theirsIdx]?.baseLine > baseIdx)) {
+        result.push({
+          type: 'unchanged',
+          content: baseLines[baseIdx],
+          baseLine: baseIdx,
+          mineLine: baseIdx,
+          theirsLine: baseIdx
+        });
+        baseIdx++;
+      }
+      continue;
+    }
+
+    if (mineBaseLine < theirsBaseLine) {
+      if (mineOp.type === 'added') {
+        result.push({
+          type: 'added-from-mine',
+          content: mineOp.content,
+          baseLine: null,
+          mineLine: mineOp.targetLine,
+          theirsLine: null
+        });
+        mineIdx++;
+      } else if (mineOp.type === 'deleted') {
+        result.push({
+          type: 'deleted-from-mine',
+          content: mineOp.content,
+          baseLine: mineOp.baseLine,
+          mineLine: null,
+          theirsLine: mineOp.baseLine
+        });
+        mineIdx++;
+        baseIdx++;
+      } else if (mineOp.type === 'modified') {
+        result.push({
+          type: 'modified-from-mine',
+          oldContent: mineOp.oldContent,
+          newContent: mineOp.newContent,
+          baseLine: mineOp.baseLine,
+          mineLine: mineOp.targetLine,
+          theirsLine: mineOp.baseLine
+        });
+        mineIdx++;
+        baseIdx++;
+      } else {
+        mineIdx++;
+      }
+    } else if (theirsBaseLine < mineBaseLine) {
+      if (theirsOp.type === 'added') {
+        result.push({
+          type: 'added-from-theirs',
+          content: theirsOp.content,
+          baseLine: null,
+          mineLine: null,
+          theirsLine: theirsOp.targetLine
+        });
+        theirsIdx++;
+      } else if (theirsOp.type === 'deleted') {
+        result.push({
+          type: 'deleted-from-theirs',
+          content: theirsOp.content,
+          baseLine: theirsOp.baseLine,
+          mineLine: theirsOp.baseLine,
+          theirsLine: null
+        });
+        theirsIdx++;
+        baseIdx++;
+      } else if (theirsOp.type === 'modified') {
+        result.push({
+          type: 'modified-from-theirs',
+          oldContent: theirsOp.oldContent,
+          newContent: theirsOp.newContent,
+          baseLine: theirsOp.baseLine,
+          mineLine: theirsOp.baseLine,
+          theirsLine: theirsOp.targetLine
+        });
+        theirsIdx++;
+        baseIdx++;
+      } else {
+        theirsIdx++;
+      }
+    } else if (mineBaseLine === theirsBaseLine && mineBaseLine !== Infinity) {
+      if (mineOp.type === 'unchanged' && theirsOp.type === 'unchanged') {
+        result.push({
+          type: 'unchanged',
+          content: baseLines[baseIdx],
+          baseLine: baseIdx,
+          mineLine: baseIdx,
+          theirsLine: baseIdx
+        });
+        mineIdx++;
+        theirsIdx++;
+        baseIdx++;
+      } else if (mineOp.type === 'unchanged' && theirsOp.type !== 'unchanged') {
+        if (theirsOp.type === 'added') {
+          result.push({
+            type: 'added-from-theirs',
+            content: theirsOp.content,
+            baseLine: null,
+            mineLine: null,
+            theirsLine: theirsOp.targetLine
+          });
+          theirsIdx++;
+        } else if (theirsOp.type === 'deleted') {
+          result.push({
+            type: 'deleted-from-theirs',
+            content: theirsOp.content,
+            baseLine: theirsOp.baseLine,
+            mineLine: theirsOp.baseLine,
+            theirsLine: null
+          });
+          theirsIdx++;
+          baseIdx++;
+        } else if (theirsOp.type === 'modified') {
+          result.push({
+            type: 'modified-from-theirs',
+            oldContent: theirsOp.oldContent,
+            newContent: theirsOp.newContent,
+            baseLine: theirsOp.baseLine,
+            mineLine: theirsOp.baseLine,
+            theirsLine: theirsOp.targetLine
+          });
+          theirsIdx++;
+          baseIdx++;
+        }
+      } else if (theirsOp.type === 'unchanged' && mineOp.type !== 'unchanged') {
+        if (mineOp.type === 'added') {
+          result.push({
+            type: 'added-from-mine',
+            content: mineOp.content,
+            baseLine: null,
+            mineLine: mineOp.targetLine,
+            theirsLine: null
+          });
+          mineIdx++;
+        } else if (mineOp.type === 'deleted') {
+          result.push({
+            type: 'deleted-from-mine',
+            content: mineOp.content,
+            baseLine: mineOp.baseLine,
+            mineLine: null,
+            theirsLine: mineOp.baseLine
+          });
+          mineIdx++;
+          baseIdx++;
+        } else if (mineOp.type === 'modified') {
+          result.push({
+            type: 'modified-from-mine',
+            oldContent: mineOp.oldContent,
+            newContent: mineOp.newContent,
+            baseLine: mineOp.baseLine,
+            mineLine: mineOp.targetLine,
+            theirsLine: mineOp.baseLine
+          });
+          mineIdx++;
+          baseIdx++;
+        }
+      } else {
+        const hasConflict = mineOp.type !== theirsOp.type ||
+          (mineOp.type === 'modified' && mineOp.newContent !== theirsOp.newContent) ||
+          (mineOp.type === 'deleted' && theirsOp.type !== 'deleted') ||
+          (mineOp.type === 'added' && theirsOp.type === 'added' && mineOp.content !== theirsOp.content);
+
+        if (hasConflict) {
+          const conflict = {
+            baseLine: mineOp.baseLine,
+            baseContent: mineOp.oldContent || mineOp.content || '',
+            mineContent: mineOp.newContent || (mineOp.type === 'deleted' ? '' : mineOp.content) || '',
+            theirsContent: theirsOp.newContent || (theirsOp.type === 'deleted' ? '' : theirsOp.content) || '',
+            mineType: mineOp.type,
+            theirsType: theirsOp.type
+          };
+          conflicts.push(conflict);
+          result.push({
+            type: 'conflict',
+            ...conflict
+          });
+        } else {
+          if (mineOp.type === 'deleted') {
+            result.push({
+              type: 'deleted-both',
+              content: mineOp.content,
+              baseLine: mineOp.baseLine,
+              mineLine: null,
+              theirsLine: null
+            });
+          } else if (mineOp.type === 'added') {
+            result.push({
+              type: 'added-both',
+              content: mineOp.content,
+              baseLine: null,
+              mineLine: mineOp.targetLine,
+              theirsLine: theirsOp.targetLine
+            });
+          } else if (mineOp.type === 'modified') {
+            result.push({
+              type: 'modified-both',
+              oldContent: mineOp.oldContent,
+              newContent: mineOp.newContent,
+              baseLine: mineOp.baseLine,
+              mineLine: mineOp.targetLine,
+              theirsLine: theirsOp.targetLine
+            });
+          }
+        }
+        mineIdx++;
+        theirsIdx++;
+        if (mineOp.type !== 'added') baseIdx++;
+      }
+    } else {
+      break;
+    }
+  }
+
+  const mergedLines = [];
+  let hasConflicts = false;
+
+  result.forEach(item => {
+    switch (item.type) {
+      case 'unchanged':
+      case 'added-from-mine':
+      case 'added-from-theirs':
+      case 'added-both':
+        mergedLines.push(item.content);
+        break;
+      case 'modified-from-mine':
+      case 'modified-from-theirs':
+      case 'modified-both':
+        mergedLines.push(item.newContent);
+        break;
+      case 'deleted-from-mine':
+      case 'deleted-from-theirs':
+      case 'deleted-both':
+        break;
+      case 'conflict':
+        hasConflicts = true;
+        mergedLines.push('<<<<<<< MINE');
+        mergedLines.push(item.mineContent);
+        mergedLines.push('=======');
+        mergedLines.push(item.theirsContent);
+        mergedLines.push('>>>>>>> THEIRS');
+        break;
+    }
+  });
+
+  return {
+    mergedText: mergedLines.join('\n'),
+    hasConflicts,
+    conflictCount: conflicts.length,
+    conflicts,
+    mergeDetails: result
+  };
+}
+
+function lineDiffToArray(baseLines, targetLines) {
+  const { dp } = computeLCS(baseLines, targetLines);
+  const rawDiff = backtrackIterative(dp, baseLines, targetLines);
+  
+  const result = [];
+  let baseLine = 0;
+  let targetLine = 0;
+
+  const diffWithModifications = detectModifications(rawDiff);
+
+  diffWithModifications.forEach(item => {
+    if (item.type === 'unchanged') {
+      result.push({
+        type: 'unchanged',
+        baseLine: item.oldIndex,
+        targetLine: item.newIndex,
+        content: item.value
+      });
+      baseLine = item.oldIndex + 1;
+      targetLine = item.newIndex + 1;
+    } else if (item.type === 'added') {
+      result.push({
+        type: 'added',
+        baseLine: baseLine,
+        targetLine: item.newIndex,
+        content: item.value
+      });
+      targetLine = item.newIndex + 1;
+    } else if (item.type === 'deleted') {
+      result.push({
+        type: 'deleted',
+        baseLine: item.oldIndex,
+        targetLine: targetLine,
+        content: item.value
+      });
+      baseLine = item.oldIndex + 1;
+    } else if (item.type === 'modified') {
+      result.push({
+        type: 'modified',
+        baseLine: item.oldIndex,
+        targetLine: item.newIndex,
+        oldContent: item.oldValue,
+        newContent: item.newValue
+      });
+      baseLine = item.oldIndex + 1;
+      targetLine = item.newIndex + 1;
+    }
+  });
+
+  return result;
+}
+
 module.exports = {
   lineDiff,
   computeCharDiff,
   computeLCS,
-  backtrackIterative
+  backtrackIterative,
+  threeWayMerge
 };

@@ -38,7 +38,12 @@ const OPERATION_TYPES = {
   MIRROR_VERSION_CREATE: 'mirror.version_create',
   PARAGRAPH_TRANSLATE: 'paragraph.translate',
   PARAGRAPH_DELETE_CONFIRM: 'paragraph.delete_confirm',
-  MIRROR_SYNC_STATUS_CHANGE: 'mirror.sync_status_change'
+  MIRROR_SYNC_STATUS_CHANGE: 'mirror.sync_status_change',
+  BRANCH_CREATE: 'branch.create',
+  BRANCH_EDIT: 'branch.edit',
+  BRANCH_STATUS: 'branch.status',
+  BRANCH_MERGE: 'branch.merge',
+  BRANCH_DELETE: 'branch.delete'
 };
 
 const RESULT_TYPES = {

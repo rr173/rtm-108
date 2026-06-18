@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { lineDiff } = require('./diffEngine');
+const { lineDiff, threeWayMerge } = require('./diffEngine');
 
 const dataDir = path.join(__dirname, '..', 'data');
 const dataFile = path.join(dataDir, 'documents.json');
@@ -9,9 +9,15 @@ let data = {
   documents: [],
   versions: [],
   tags: [],
+  branches: [],
+  branchVersions: [],
+  mergeRecords: [],
   nextDocId: 1,
   nextVersionId: 1,
-  nextTagId: 1
+  nextTagId: 1,
+  nextBranchId: 1,
+  nextBranchVersionId: 1,
+  nextMergeRecordId: 1
 };
 
 function ensureDataDir() {
@@ -30,9 +36,15 @@ function loadData() {
         documents: loaded.documents || [],
         versions: loaded.versions || [],
         tags: loaded.tags || [],
+        branches: loaded.branches || [],
+        branchVersions: loaded.branchVersions || [],
+        mergeRecords: loaded.mergeRecords || [],
         nextDocId: loaded.nextDocId || 1,
         nextVersionId: loaded.nextVersionId || 1,
-        nextTagId: loaded.nextTagId || 1
+        nextTagId: loaded.nextTagId || 1,
+        nextBranchId: loaded.nextBranchId || 1,
+        nextBranchVersionId: loaded.nextBranchVersionId || 1,
+        nextMergeRecordId: loaded.nextMergeRecordId || 1
       };
     } catch (e) {
       console.warn('文档数据文件损坏，使用空数据:', e.message);
@@ -283,6 +295,357 @@ function setDocumentPublic(documentId, isPublic) {
   return getDocumentById(documentId);
 }
 
+function listBranches(documentId) {
+  loadData();
+  const branches = data.branches.filter(b => b.document_id === documentId);
+  
+  return branches.map(branch => {
+    const branchVersions = data.branchVersions.filter(v => v.branch_id === branch.id);
+    const latestVersion = branchVersions[branchVersions.length - 1];
+    return {
+      ...branch,
+      version_count: branchVersions.length,
+      latest_version: latestVersion ? latestVersion.version_number : 0
+    };
+  }).sort((a, b) => b.created_at - a.created_at);
+}
+
+function getBranchById(branchId) {
+  loadData();
+  const branch = data.branches.find(b => b.id === branchId);
+  if (!branch) return null;
+
+  const branchVersions = data.branchVersions
+    .filter(v => v.branch_id === branchId)
+    .sort((a, b) => a.version_number - b.version_number);
+
+  return {
+    ...branch,
+    versions: branchVersions
+  };
+}
+
+function createBranch({ document_id, base_version, name, description = '', created_by = '' }) {
+  loadData();
+
+  const doc = data.documents.find(d => d.id === document_id);
+  if (!doc) {
+    return { error: '文档不存在', status: 404 };
+  }
+
+  const baseVersion = data.versions.find(
+    v => v.document_id === document_id && v.version_number === base_version
+  );
+  if (!baseVersion) {
+    return { error: '基准版本不存在', status: 404 };
+  }
+
+  const existingBranch = data.branches.find(
+    b => b.document_id === document_id && b.name === name && b.status === 'active'
+  );
+  if (existingBranch) {
+    return { error: '同名活跃分支已存在', status: 400 };
+  }
+
+  const branch = {
+    id: data.nextBranchId++,
+    document_id,
+    name,
+    description,
+    base_version,
+    status: 'active',
+    created_by,
+    created_at: now(),
+    merged_at: null,
+    merged_into_version: null
+  };
+
+  data.branches.push(branch);
+
+  const firstBranchVersion = {
+    id: data.nextBranchVersionId++,
+    branch_id: branch.id,
+    document_id,
+    version_number: 1,
+    content: baseVersion.content,
+    commit_message: `分支起点：主线 v${base_version}`,
+    base_version: base_version,
+    created_at: now()
+  };
+
+  data.branchVersions.push(firstBranchVersion);
+  saveData();
+
+  return getBranchById(branch.id);
+}
+
+function getBranchVersion(branchId, versionNumber) {
+  loadData();
+  return data.branchVersions.find(
+    v => v.branch_id === branchId && v.version_number === versionNumber
+  );
+}
+
+function updateBranchContent(branchId, { content, commit_message = '' }) {
+  loadData();
+
+  const branch = data.branches.find(b => b.id === branchId);
+  if (!branch) {
+    return { error: '分支不存在', status: 404 };
+  }
+
+  if (branch.status !== 'active') {
+    return { error: `分支已${branch.status === 'merged' ? '合并' : '废弃'}，不能编辑`, status: 400 };
+  }
+
+  const branchVersions = data.branchVersions.filter(v => v.branch_id === branchId);
+  const latestVersion = branchVersions[branchVersions.length - 1];
+
+  if (latestVersion && latestVersion.content === content) {
+    return getBranchById(branchId);
+  }
+
+  const newVersion = {
+    id: data.nextBranchVersionId++,
+    branch_id: branchId,
+    document_id: branch.document_id,
+    version_number: latestVersion ? latestVersion.version_number + 1 : 1,
+    content,
+    commit_message: commit_message || `分支版本 v${latestVersion ? latestVersion.version_number + 1 : 1}`,
+    created_at: now()
+  };
+
+  data.branchVersions.push(newVersion);
+  saveData();
+
+  return getBranchById(branchId);
+}
+
+function updateBranchStatus(branchId, status) {
+  loadData();
+
+  const branch = data.branches.find(b => b.id === branchId);
+  if (!branch) {
+    return { error: '分支不存在', status: 404 };
+  }
+
+  if (!['active', 'merged', 'abandoned'].includes(status)) {
+    return { error: '无效的状态值', status: 400 };
+  }
+
+  branch.status = status;
+  if (status === 'merged') {
+    branch.merged_at = now();
+  }
+
+  saveData();
+
+  return getBranchById(branchId);
+}
+
+function previewMerge(branchId) {
+  loadData();
+
+  const branch = data.branches.find(b => b.id === branchId);
+  if (!branch) {
+    return { error: '分支不存在', status: 404 };
+  }
+
+  if (branch.status !== 'active') {
+    return { error: '只有活跃分支才能合并', status: 400 };
+  }
+
+  const doc = data.documents.find(d => d.id === branch.document_id);
+  if (!doc) {
+    return { error: '文档不存在', status: 404 };
+  }
+
+  const mainVersions = data.versions.filter(v => v.document_id === branch.document_id);
+  const latestMainVersion = mainVersions[mainVersions.length - 1];
+  if (!latestMainVersion) {
+    return { error: '主线没有版本', status: 400 };
+  }
+
+  const baseVersion = data.versions.find(
+    v => v.document_id === branch.document_id && v.version_number === branch.base_version
+  );
+  if (!baseVersion) {
+    return { error: '基准版本不存在', status: 404 };
+  }
+
+  const branchVersions = data.branchVersions.filter(v => v.branch_id === branchId);
+  const latestBranchVersion = branchVersions[branchVersions.length - 1];
+  if (!latestBranchVersion) {
+    return { error: '分支没有版本', status: 400 };
+  }
+
+  const mergeResult = threeWayMerge(
+    baseVersion.content,
+    latestMainVersion.content,
+    latestBranchVersion.content
+  );
+
+  return {
+    branch_id: branchId,
+    branch_name: branch.name,
+    base_version: branch.base_version,
+    main_latest_version: latestMainVersion.version_number,
+    branch_latest_version: latestBranchVersion.version_number,
+    has_conflicts: mergeResult.hasConflicts,
+    conflict_count: mergeResult.conflictCount,
+    conflicts: mergeResult.conflicts,
+    merged_text: mergeResult.hasConflicts ? null : mergeResult.mergedText,
+    merge_details: mergeResult.mergeDetails
+  };
+}
+
+function executeMerge(branchId, { conflict_resolutions = [], commit_message = '', merged_by = '' } = {}) {
+  loadData();
+
+  const branch = data.branches.find(b => b.id === branchId);
+  if (!branch) {
+    return { error: '分支不存在', status: 404 };
+  }
+
+  if (branch.status !== 'active') {
+    return { error: '只有活跃分支才能合并', status: 400 };
+  }
+
+  const doc = data.documents.find(d => d.id === branch.document_id);
+  if (!doc) {
+    return { error: '文档不存在', status: 404 };
+  }
+
+  const mainVersions = data.versions.filter(v => v.document_id === branch.document_id);
+  const latestMainVersion = mainVersions[mainVersions.length - 1];
+
+  const baseVersion = data.versions.find(
+    v => v.document_id === branch.document_id && v.version_number === branch.base_version
+  );
+
+  const branchVersions = data.branchVersions.filter(v => v.branch_id === branchId);
+  const latestBranchVersion = branchVersions[branchVersions.length - 1];
+
+  const preview = previewMerge(branchId);
+  if (preview.error) {
+    return preview;
+  }
+
+  let mergedText;
+
+  if (preview.has_conflicts) {
+    if (!conflict_resolutions || conflict_resolutions.length !== preview.conflict_count) {
+      return {
+        error: '存在冲突，需要提供解决方案',
+        status: 409,
+        conflicts: preview.conflicts
+      };
+    }
+
+    const details = preview.merge_details;
+    const resolvedLines = [];
+    let conflictIndex = 0;
+
+    details.forEach(item => {
+      if (item.type === 'conflict') {
+        const resolution = conflict_resolutions[conflictIndex];
+        if (resolution === 'mine' || resolution === 'main') {
+          resolvedLines.push(item.mineContent);
+        } else if (resolution === 'theirs' || resolution === 'branch') {
+          resolvedLines.push(item.theirsContent);
+        } else if (typeof resolution === 'string') {
+          resolvedLines.push(resolution);
+        } else {
+          resolvedLines.push(item.mineContent);
+        }
+        conflictIndex++;
+      } else if (item.type === 'unchanged' || 
+                 item.type === 'added-from-mine' || 
+                 item.type === 'added-from-theirs' || 
+                 item.type === 'added-both') {
+        resolvedLines.push(item.content);
+      } else if (item.type === 'modified-from-mine' || 
+                 item.type === 'modified-from-theirs' || 
+                 item.type === 'modified-both') {
+        resolvedLines.push(item.newContent);
+      }
+    });
+
+    mergedText = resolvedLines.join('\n');
+  } else {
+    mergedText = preview.merged_text;
+  }
+
+  const newVersion = {
+    id: data.nextVersionId++,
+    document_id: branch.document_id,
+    version_number: latestMainVersion ? latestMainVersion.version_number + 1 : 1,
+    content: mergedText,
+    commit_message: commit_message || `合并分支 \"${branch.name}\" 到主线`,
+    created_at: now(),
+    merged_from_branch: branchId,
+    merged_by
+  };
+
+  data.versions.push(newVersion);
+
+  branch.status = 'merged';
+  branch.merged_at = now();
+  branch.merged_into_version = newVersion.version_number;
+
+  const mergeRecord = {
+    id: data.nextMergeRecordId++,
+    document_id: branch.document_id,
+    branch_id: branchId,
+    branch_name: branch.name,
+    base_version: branch.base_version,
+    main_version_before: latestMainVersion ? latestMainVersion.version_number : 0,
+    main_version_after: newVersion.version_number,
+    branch_version: latestBranchVersion.version_number,
+    conflict_count: preview.conflict_count,
+    merged_by,
+    created_at: now()
+  };
+
+  data.mergeRecords.push(mergeRecord);
+  saveData();
+
+  return {
+    success: true,
+    new_version: newVersion,
+    merge_record: mergeRecord,
+    branch: getBranchById(branchId)
+  };
+}
+
+function getMergeRecordsByDocument(documentId) {
+  loadData();
+  return data.mergeRecords
+    .filter(r => r.document_id === documentId)
+    .sort((a, b) => b.created_at - a.created_at);
+}
+
+function deleteBranch(branchId) {
+  loadData();
+
+  const branch = data.branches.find(b => b.id === branchId);
+  if (!branch) {
+    return { error: '分支不存在', status: 404 };
+  }
+
+  if (branch.status === 'merged') {
+    return { error: '已合并的分支不能删除', status: 400 };
+  }
+
+  const branchIndex = data.branches.findIndex(b => b.id === branchId);
+  data.branches.splice(branchIndex, 1);
+
+  data.branchVersions = data.branchVersions.filter(v => v.branch_id !== branchId);
+
+  saveData();
+  return { success: true };
+}
+
 loadData();
 
 module.exports = {
@@ -298,6 +661,16 @@ module.exports = {
   getTagsByDocument,
   revertToVersion,
   setDocumentPublic,
+  listBranches,
+  getBranchById,
+  createBranch,
+  getBranchVersion,
+  updateBranchContent,
+  updateBranchStatus,
+  previewMerge,
+  executeMerge,
+  getMergeRecordsByDocument,
+  deleteBranch,
   saveData: saveData,
   loadData: loadData
 };

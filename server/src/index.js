@@ -32,7 +32,17 @@ const {
   addTag,
   removeTag,
   revertToVersion,
-  setDocumentPublic
+  setDocumentPublic,
+  listBranches,
+  getBranchById,
+  createBranch,
+  getBranchVersion,
+  updateBranchContent,
+  updateBranchStatus,
+  previewMerge,
+  executeMerge,
+  getMergeRecordsByDocument,
+  deleteBranch
 } = require('./documentService');
 
 const {
@@ -602,6 +612,319 @@ app.delete('/api/tags/:tagId', (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ============ 分支 API ============
+
+app.get(
+  '/api/documents/:id/branches',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const branches = listBranches(parseInt(req.params.id));
+      res.json(branches);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/branches/:branchId',
+  (req, res) => {
+    try {
+      const branch = getBranchById(parseInt(req.params.branchId));
+      if (!branch) {
+        return res.status(404).json({ error: '分支不存在' });
+      }
+      const doc = getDocumentById(branch.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(branch.document_id, userId, ROLES.VIEWER, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+      res.json(branch);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents/:id/branches',
+  logAudit(OPERATION_TYPES.BRANCH_CREATE, {
+    getParams: (req) => ({ branch_name: req.body?.name, base_version: req.body?.base_version })
+  }),
+  requireDocPermission(ROLES.EDITOR),
+  (req, res) => {
+    try {
+      const { name, base_version, description, created_by } = req.body;
+      if (!name || base_version === undefined) {
+        return res.status(400).json({ error: '缺少必要参数：分支名称和基准版本' });
+      }
+      const result = createBranch({
+        document_id: parseInt(req.params.id),
+        base_version: parseInt(base_version),
+        name,
+        description: description || '',
+        created_by: created_by || req.currentUser.name
+      });
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+      res.status(201).json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/branches/:branchId/versions/:version',
+  (req, res) => {
+    try {
+      const branchId = parseInt(req.params.branchId);
+      const versionNumber = parseInt(req.params.version);
+      
+      const branch = getBranchById(branchId);
+      if (!branch) {
+        return res.status(404).json({ error: '分支不存在' });
+      }
+      
+      const doc = getDocumentById(branch.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(branch.document_id, userId, ROLES.VIEWER, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+      
+      const version = getBranchVersion(branchId, versionNumber);
+      if (!version) {
+        return res.status(404).json({ error: '版本不存在' });
+      }
+      res.json(version);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put(
+  '/api/branches/:branchId',
+  logAudit(OPERATION_TYPES.BRANCH_EDIT, {
+    getDocumentId: (req) => {
+      const branch = getBranchById(parseInt(req.params.branchId));
+      return branch ? branch.document_id : null;
+    },
+    getParams: (req) => ({ commit_message: req.body?.commit_message })
+  }),
+  (req, res) => {
+    try {
+      const branchId = parseInt(req.params.branchId);
+      const { content, commit_message } = req.body;
+      
+      const branch = getBranchById(branchId);
+      if (!branch) {
+        return res.status(404).json({ error: '分支不存在' });
+      }
+      
+      const doc = getDocumentById(branch.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(branch.document_id, userId, ROLES.EDITOR, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+      
+      if (content === undefined) {
+        return res.status(400).json({ error: '缺少内容参数' });
+      }
+      
+      const result = updateBranchContent(branchId, {
+        content,
+        commit_message: commit_message || ''
+      });
+      
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put(
+  '/api/branches/:branchId/status',
+  logAudit(OPERATION_TYPES.BRANCH_STATUS, {
+    getDocumentId: (req) => {
+      const branch = getBranchById(parseInt(req.params.branchId));
+      return branch ? branch.document_id : null;
+    },
+    getParams: (req) => ({ status: req.body?.status })
+  }),
+  (req, res) => {
+    try {
+      const branchId = parseInt(req.params.branchId);
+      const { status } = req.body;
+      
+      const branch = getBranchById(branchId);
+      if (!branch) {
+        return res.status(404).json({ error: '分支不存在' });
+      }
+      
+      const doc = getDocumentById(branch.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(branch.document_id, userId, ROLES.OWNER, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+      
+      const result = updateBranchStatus(branchId, status);
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/branches/:branchId/merge/preview',
+  (req, res) => {
+    try {
+      const branchId = parseInt(req.params.branchId);
+      
+      const branch = getBranchById(branchId);
+      if (!branch) {
+        return res.status(404).json({ error: '分支不存在' });
+      }
+      
+      const doc = getDocumentById(branch.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(branch.document_id, userId, ROLES.EDITOR, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+      
+      const result = previewMerge(branchId);
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/branches/:branchId/merge',
+  logAudit(OPERATION_TYPES.BRANCH_MERGE, {
+    getDocumentId: (req) => {
+      const branch = getBranchById(parseInt(req.params.branchId));
+      return branch ? branch.document_id : null;
+    },
+    getParams: (req) => ({ commit_message: req.body?.commit_message })
+  }),
+  (req, res) => {
+    try {
+      const branchId = parseInt(req.params.branchId);
+      const { conflict_resolutions, commit_message, merged_by } = req.body;
+      
+      const branch = getBranchById(branchId);
+      if (!branch) {
+        return res.status(404).json({ error: '分支不存在' });
+      }
+      
+      const doc = getDocumentById(branch.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(branch.document_id, userId, ROLES.EDITOR, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+      
+      const result = executeMerge(branchId, {
+        conflict_resolutions: conflict_resolutions || [],
+        commit_message: commit_message || '',
+        merged_by: merged_by || req.currentUser.name
+      });
+      
+      if (result.error) {
+        return res.status(result.status || 400).json({ 
+          error: result.error,
+          conflicts: result.conflicts
+        });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/merge-records',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const records = getMergeRecordsByDocument(parseInt(req.params.id));
+      res.json(records);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.delete(
+  '/api/branches/:branchId',
+  logAudit(OPERATION_TYPES.BRANCH_DELETE, {
+    getDocumentId: (req) => {
+      const branch = getBranchById(parseInt(req.params.branchId));
+      return branch ? branch.document_id : null;
+    }
+  }),
+  (req, res) => {
+    try {
+      const branchId = parseInt(req.params.branchId);
+      
+      const branch = getBranchById(branchId);
+      if (!branch) {
+        return res.status(404).json({ error: '分支不存在' });
+      }
+      
+      const doc = getDocumentById(branch.document_id, { reload: false });
+      if (doc) {
+        const userId = req.currentUser.id;
+        const permissionResult = checkPermission(branch.document_id, userId, ROLES.OWNER, doc.is_public);
+        if (!permissionResult.allowed) {
+          return res.status(403).json({ error: permissionResult.reason || '权限不足' });
+        }
+      }
+      
+      const result = deleteBranch(branchId);
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
 
 // ============ 评审 API ============
 

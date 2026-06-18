@@ -1697,6 +1697,673 @@ function renderLine(type, lineNum, content, charDiff = null, side = null) {
   `;
 }
 
+let currentBranchId = null;
+let currentBranch = null;
+let currentBranches = [];
+let currentView = 'main';
+let mergeConflicts = [];
+let currentConflictIndex = 0;
+let conflictResolutions = [];
+let selectedBranchOldVersion = null;
+let selectedBranchNewVersion = null;
+
+function switchToMainLine() {
+  currentView = 'main';
+  currentBranchId = null;
+  currentBranch = null;
+  selectedOldVersion = null;
+  selectedNewVersion = null;
+  
+  document.querySelectorAll('.branch-tab').forEach(tab => tab.classList.remove('active'));
+  document.querySelector('.branch-tab:first-child').classList.add('active');
+  
+  document.getElementById('mainTimeline').style.display = 'block';
+  document.getElementById('branchListPanel').style.display = 'none';
+  document.getElementById('branchDetailPanel').style.display = 'none';
+  
+  if (currentDocument) {
+    renderVersionTimeline(currentDocument.versions);
+  }
+  updateSelectedVersionsDisplay();
+}
+
+function showBranchList() {
+  currentView = 'branches';
+  currentBranchId = null;
+  currentBranch = null;
+  
+  document.querySelectorAll('.branch-tab').forEach(tab => tab.classList.remove('active'));
+  document.querySelector('.branch-tab:last-child').classList.add('active');
+  
+  document.getElementById('mainTimeline').style.display = 'none';
+  document.getElementById('branchListPanel').style.display = 'block';
+  document.getElementById('branchDetailPanel').style.display = 'none';
+  
+  loadBranches();
+}
+
+async function loadBranches() {
+  if (!currentDocId) return;
+  
+  try {
+    const res = await apiFetch(`/api/documents/${currentDocId}/branches`);
+    if (!res.ok) {
+      const data = await res.json();
+      showToast('加载分支列表失败: ' + (data.error || res.statusText), 'error');
+      return;
+    }
+    const branches = await res.json();
+    currentBranches = branches;
+    renderBranchList(branches);
+  } catch (e) {
+    console.error('加载分支列表失败:', e);
+    showToast('加载分支列表失败', 'error');
+  }
+}
+
+function renderBranchList(branches) {
+  const listEl = document.getElementById('branchList');
+  
+  if (!branches || branches.length === 0) {
+    listEl.innerHTML = '<div class="empty-state-small">暂无分支，点击"新建分支"创建</div>';
+    return;
+  }
+  
+  listEl.innerHTML = branches.map(branch => {
+    const statusClass = `branch-status-${branch.status}`;
+    const statusText = {
+      active: '活跃',
+      merged: '已合并',
+      abandoned: '已废弃'
+    }[branch.status] || branch.status;
+    
+    return `
+      <div class="branch-item" onclick="selectBranch(${branch.id})">
+        <div class="branch-item-header">
+          <span class="branch-name">🌿 ${escapeHtml(branch.name)}</span>
+          <span class="branch-status-badge ${statusClass}">${statusText}</span>
+        </div>
+        <div class="branch-item-meta">
+          <span>起点: v${branch.base_version}</span>
+          <span>版本: v${branch.latest_version}</span>
+        </div>
+        <div class="branch-item-time">
+          ${branch.created_by ? escapeHtml(branch.created_by) + ' · ' : ''}${formatDate(branch.created_at)}
+        </div>
+        ${branch.description ? `<div class="branch-item-desc">${escapeHtml(branch.description)}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+async function selectBranch(branchId) {
+  currentBranchId = branchId;
+  selectedBranchOldVersion = null;
+  selectedBranchNewVersion = null;
+  
+  try {
+    const res = await apiFetch(`/api/branches/${branchId}`);
+    if (!res.ok) {
+      const data = await res.json();
+      showToast('加载分支失败: ' + (data.error || res.statusText), 'error');
+      return;
+    }
+    const branch = await res.json();
+    currentBranch = branch;
+    
+    document.getElementById('branchListPanel').style.display = 'none';
+    document.getElementById('branchDetailPanel').style.display = 'block';
+    
+    document.getElementById('currentBranchName').textContent = '🌿 ' + branch.name;
+    
+    renderBranchInfo(branch);
+    renderBranchVersionTimeline(branch.versions);
+    updateBranchButtons(branch);
+    
+    currentView = 'branch-detail';
+  } catch (e) {
+    console.error('加载分支失败:', e);
+    showToast('加载分支失败', 'error');
+  }
+}
+
+function renderBranchInfo(branch) {
+  const infoEl = document.getElementById('branchInfo');
+  
+  const statusText = {
+    active: '活跃',
+    merged: '已合并',
+    abandoned: '已废弃'
+  }[branch.status] || branch.status;
+  
+  const statusClass = `branch-status-${branch.status}`;
+  
+  infoEl.innerHTML = `
+    <div class="branch-info-row">
+      <span class="branch-info-label">状态:</span>
+      <span class="branch-status-badge ${statusClass}">${statusText}</span>
+    </div>
+    <div class="branch-info-row">
+      <span class="branch-info-label">起点版本:</span>
+      <span>v${branch.base_version}</span>
+    </div>
+    <div class="branch-info-row">
+      <span class="branch-info-label">版本数:</span>
+      <span>${branch.versions ? branch.versions.length : 0}</span>
+    </div>
+    <div class="branch-info-row">
+      <span class="branch-info-label">创建人:</span>
+      <span>${escapeHtml(branch.created_by || '-')}</span>
+    </div>
+    <div class="branch-info-row">
+      <span class="branch-info-label">创建时间:</span>
+      <span>${formatDate(branch.created_at)}</span>
+    </div>
+    ${branch.merged_into_version ? `
+    <div class="branch-info-row">
+      <span class="branch-info-label">合并到:</span>
+      <span>v${branch.merged_into_version}</span>
+    </div>` : ''}
+    ${branch.description ? `
+    <div class="branch-info-row">
+      <span class="branch-info-label">描述:</span>
+      <span>${escapeHtml(branch.description)}</span>
+    </div>` : ''}
+  `;
+}
+
+function renderBranchVersionTimeline(versions) {
+  const timelineEl = document.getElementById('branchVersionTimeline');
+  
+  const sortedVersions = [...versions].sort((a, b) => b.version_number - a.version_number);
+  
+  timelineEl.innerHTML = sortedVersions.map((v, index) => {
+    const isOld = selectedBranchOldVersion === v.version_number;
+    const isNew = selectedBranchNewVersion === v.version_number;
+    
+    return `
+      <div class="version-item branch-version-item ${isOld ? 'selected-old' : ''} ${isNew ? 'selected-new' : ''}" 
+           onclick="toggleBranchVersionSelection(${v.version_number})"
+           data-version="${v.version_number}">
+        <div class="version-dot branch-version-dot"></div>
+        <div class="version-line ${index === sortedVersions.length - 1 ? 'last' : ''} branch-version-line"></div>
+        <div class="version-content">
+          <div class="version-header">
+            <span class="version-number">branch-v${v.version_number}</span>
+          </div>
+          <div class="version-message">${escapeHtml(v.commit_message || '无描述')}</div>
+          <div class="version-time">${formatDate(v.created_at)}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function toggleBranchVersionSelection(versionNum) {
+  if (selectedBranchOldVersion === versionNum) {
+    selectedBranchOldVersion = null;
+  } else if (selectedBranchNewVersion === versionNum) {
+    selectedBranchNewVersion = null;
+  } else if (selectedBranchOldVersion === null) {
+    selectedBranchOldVersion = versionNum;
+  } else if (selectedBranchNewVersion === null) {
+    selectedBranchNewVersion = versionNum;
+    if (selectedBranchOldVersion > selectedBranchNewVersion) {
+      [selectedBranchOldVersion, selectedBranchNewVersion] = [selectedBranchNewVersion, selectedBranchOldVersion];
+    }
+  } else {
+    selectedBranchOldVersion = selectedBranchNewVersion;
+    selectedBranchNewVersion = versionNum;
+    if (selectedBranchOldVersion > selectedBranchNewVersion) {
+      [selectedBranchOldVersion, selectedBranchNewVersion] = [selectedBranchNewVersion, selectedBranchOldVersion];
+    }
+  }
+  
+  if (currentBranch) {
+    renderBranchVersionTimeline(currentBranch.versions);
+  }
+}
+
+function updateBranchButtons(branch) {
+  const canEdit = branch.status === 'active' && hasPermission('editor');
+  const canMerge = branch.status === 'active' && hasPermission('editor');
+  const canDelete = branch.status !== 'merged' && hasPermission('owner');
+  const canAbandon = branch.status === 'active' && hasPermission('owner');
+  
+  const editBtn = document.getElementById('editBranchBtn');
+  const mergeBtn = document.getElementById('mergeBranchBtn');
+  const abandonBtn = document.getElementById('abandonBranchBtn');
+  const deleteBtn = document.getElementById('deleteBranchBtn');
+  
+  setButtonDisabled(editBtn, !canEdit, canEdit ? '' : branch.status !== 'active' ? '分支已不可编辑' : '权限不足');
+  setButtonDisabled(mergeBtn, !canMerge, canMerge ? '' : branch.status !== 'active' ? '分支已不可合并' : '权限不足');
+  setButtonDisabled(abandonBtn, !canAbandon, canAbandon ? '' : branch.status !== 'active' ? '分支不是活跃状态' : '权限不足');
+  setButtonDisabled(deleteBtn, !canDelete, canDelete ? '' : branch.status === 'merged' ? '已合并分支不能删除' : '权限不足');
+}
+
+function backToBranchList() {
+  currentBranchId = null;
+  currentBranch = null;
+  currentView = 'branches';
+  
+  document.getElementById('branchDetailPanel').style.display = 'none';
+  document.getElementById('branchListPanel').style.display = 'block';
+  
+  loadBranches();
+}
+
+function showCreateBranchModal() {
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
+  const selectEl = document.getElementById('newBranchBaseVersion');
+  selectEl.innerHTML = currentDocument.versions.map(v => 
+    `<option value="${v.version_number}">v${v.version_number} - ${escapeHtml(v.commit_message || '无描述')}</option>`
+  ).join('');
+  
+  if (currentDocument.versions.length > 0) {
+    selectEl.value = currentDocument.versions[currentDocument.versions.length - 1].version_number;
+  }
+  
+  document.getElementById('newBranchName').value = '';
+  document.getElementById('newBranchDesc').value = '';
+  document.getElementById('newBranchCreator').value = reviewerName;
+  
+  document.getElementById('createBranchModal').classList.add('active');
+}
+
+function hideCreateBranchModal() {
+  document.getElementById('createBranchModal').classList.remove('active');
+}
+
+async function createBranch() {
+  const name = document.getElementById('newBranchName').value.trim();
+  const description = document.getElementById('newBranchDesc').value.trim();
+  const baseVersion = parseInt(document.getElementById('newBranchBaseVersion').value);
+  const createdBy = document.getElementById('newBranchCreator').value.trim();
+  
+  if (!name) {
+    showToast('请输入分支名称', 'error');
+    return;
+  }
+  
+  if (!baseVersion) {
+    showToast('请选择基准版本', 'error');
+    return;
+  }
+  
+  if (!createdBy) {
+    showToast('请输入创建人', 'error');
+    return;
+  }
+  
+  try {
+    const res = await apiFetch(`/api/documents/${currentDocId}/branches`, {
+      method: 'POST',
+      body: JSON.stringify({ name, description, base_version: baseVersion, created_by: createdBy })
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '创建失败');
+    }
+    
+    const branch = await res.json();
+    hideCreateBranchModal();
+    showToast('分支创建成功', 'success');
+    
+    reviewerName = createdBy;
+    localStorage.setItem('reviewerName', reviewerName);
+    
+    loadBranches();
+    loadAuditLogs();
+  } catch (e) {
+    showToast('创建失败: ' + e.message, 'error');
+  }
+}
+
+function showEditBranchModal() {
+  if (!currentBranch || currentBranch.status !== 'active') {
+    showToast('只有活跃分支才能编辑', 'error');
+    return;
+  }
+  
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
+  const latestVersion = currentBranch.versions[currentBranch.versions.length - 1];
+  document.getElementById('editBranchContent').value = latestVersion.content;
+  document.getElementById('editBranchCommitMsg').value = '';
+  document.getElementById('editBranchModal').classList.add('active');
+}
+
+function hideEditBranchModal() {
+  document.getElementById('editBranchModal').classList.remove('active');
+}
+
+async function saveBranchEdit() {
+  if (!currentBranchId) return;
+  
+  const content = document.getElementById('editBranchContent').value;
+  const commitMessage = document.getElementById('editBranchCommitMsg').value.trim();
+  
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
+  try {
+    const res = await apiFetch(`/api/branches/${currentBranchId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content, commit_message: commitMessage })
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '保存失败');
+    }
+    
+    const branch = await res.json();
+    currentBranch = branch;
+    
+    showToast('新版本已保存', 'success');
+    hideEditBranchModal();
+    renderBranchInfo(branch);
+    renderBranchVersionTimeline(branch.versions);
+    loadAuditLogs();
+    loadBranches();
+  } catch (e) {
+    showToast('保存失败: ' + e.message, 'error');
+  }
+}
+
+async function previewBranchMerge() {
+  if (!currentBranchId) return;
+  
+  if (!hasPermission('editor')) {
+    showToast('权限不足（需编辑者以上）', 'error');
+    return;
+  }
+  
+  try {
+    const res = await apiFetch(`/api/branches/${currentBranchId}/merge/preview`);
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '预览失败');
+    }
+    
+    const result = await res.json();
+    
+    if (result.has_conflicts) {
+      mergeConflicts = result.conflicts;
+      currentConflictIndex = 0;
+      conflictResolutions = new Array(result.conflict_count).fill(null);
+      
+      showThreeWayMergeModal();
+    } else {
+      if (confirm('没有冲突！确定要将分支合并到主线吗？')) {
+        executeBranchMergeNoConflict();
+      }
+    }
+  } catch (e) {
+    showToast('合并预览失败: ' + e.message, 'error');
+  }
+}
+
+function showThreeWayMergeModal() {
+  document.getElementById('threeWayMergeModal').classList.add('active');
+  updateConflictView();
+}
+
+function hideThreeWayMergeModal() {
+  document.getElementById('threeWayMergeModal').classList.remove('active');
+  mergeConflicts = [];
+  currentConflictIndex = 0;
+  conflictResolutions = [];
+}
+
+function updateConflictView() {
+  if (mergeConflicts.length === 0) return;
+  
+  const conflict = mergeConflicts[currentConflictIndex];
+  
+  document.getElementById('mergeProgressText').textContent = 
+    `冲突 ${currentConflictIndex + 1} / ${mergeConflicts.length}`;
+  document.getElementById('mergeConflictCount').textContent = 
+    `${mergeConflicts.length} 个冲突`;
+  
+  document.getElementById('mergeMainContent').textContent = conflict.mineContent || '(空)';
+  document.getElementById('mergeBaseContent').textContent = conflict.baseContent || '(空)';
+  document.getElementById('mergeBranchContent').textContent = conflict.theirsContent || '(空)';
+  
+  const currentResolution = conflictResolutions[currentConflictIndex];
+  if (currentResolution === 'main') {
+    document.getElementById('mergeResultEditor').value = conflict.mineContent || '';
+  } else if (currentResolution === 'branch') {
+    document.getElementById('mergeResultEditor').value = conflict.theirsContent || '';
+  } else if (typeof currentResolution === 'string') {
+    document.getElementById('mergeResultEditor').value = currentResolution;
+  } else {
+    document.getElementById('mergeResultEditor').value = '';
+  }
+  
+  document.getElementById('prevConflictBtn').disabled = currentConflictIndex === 0;
+  document.getElementById('nextConflictBtn').disabled = 
+    currentConflictIndex === mergeConflicts.length - 1;
+}
+
+function prevConflict() {
+  if (currentConflictIndex > 0) {
+    saveCurrentResolution();
+    currentConflictIndex--;
+    updateConflictView();
+  }
+}
+
+function nextConflict() {
+  if (currentConflictIndex < mergeConflicts.length - 1) {
+    saveCurrentResolution();
+    currentConflictIndex++;
+    updateConflictView();
+  }
+}
+
+function saveCurrentResolution() {
+  const editorValue = document.getElementById('mergeResultEditor').value;
+  const conflict = mergeConflicts[currentConflictIndex];
+  
+  if (editorValue === conflict.mineContent) {
+    conflictResolutions[currentConflictIndex] = 'main';
+  } else if (editorValue === conflict.theirsContent) {
+    conflictResolutions[currentConflictIndex] = 'branch';
+  } else {
+    conflictResolutions[currentConflictIndex] = editorValue;
+  }
+}
+
+function chooseMainVersion() {
+  const conflict = mergeConflicts[currentConflictIndex];
+  document.getElementById('mergeResultEditor').value = conflict.mineContent || '';
+  conflictResolutions[currentConflictIndex] = 'main';
+}
+
+function chooseBranchVersion() {
+  const conflict = mergeConflicts[currentConflictIndex];
+  document.getElementById('mergeResultEditor').value = conflict.theirsContent || '';
+  conflictResolutions[currentConflictIndex] = 'branch';
+}
+
+async function executeBranchMerge() {
+  saveCurrentResolution();
+  
+  const unresolved = conflictResolutions.filter(r => r === null || r === '').length;
+  if (unresolved > 0) {
+    showToast(`还有 ${unresolved} 个冲突未解决`, 'error');
+    return;
+  }
+  
+  try {
+    const res = await apiFetch(`/api/branches/${currentBranchId}/merge`, {
+      method: 'POST',
+      body: JSON.stringify({
+        conflict_resolutions: conflictResolutions,
+        commit_message: `合并分支 \"${currentBranch.name}\"`
+      })
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '合并失败');
+    }
+    
+    const result = await res.json();
+    
+    hideThreeWayMergeModal();
+    showToast(`合并成功！已生成 v${result.new_version.version_number}`, 'success');
+    
+    currentBranch = result.branch;
+    renderBranchInfo(result.branch);
+    renderBranchVersionTimeline(result.branch.versions);
+    updateBranchButtons(result.branch);
+    
+    const docRes = await apiFetch(`/api/documents/${currentDocId}`);
+    if (docRes.ok) {
+      const doc = await docRes.json();
+      currentDocument = doc;
+      renderVersionTimeline(doc.versions);
+    }
+    
+    loadBranches();
+    loadAuditLogs();
+  } catch (e) {
+    showToast('合并失败: ' + e.message, 'error');
+  }
+}
+
+async function executeBranchMergeNoConflict() {
+  try {
+    const res = await apiFetch(`/api/branches/${currentBranchId}/merge`, {
+      method: 'POST',
+      body: JSON.stringify({
+        commit_message: `合并分支 \"${currentBranch.name}\"`
+      })
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '合并失败');
+    }
+    
+    const result = await res.json();
+    
+    showToast(`合并成功！已生成 v${result.new_version.version_number}`, 'success');
+    
+    currentBranch = result.branch;
+    renderBranchInfo(result.branch);
+    renderBranchVersionTimeline(result.branch.versions);
+    updateBranchButtons(result.branch);
+    
+    const docRes = await apiFetch(`/api/documents/${currentDocId}`);
+    if (docRes.ok) {
+      const doc = await docRes.json();
+      currentDocument = doc;
+      renderVersionTimeline(doc.versions);
+    }
+    
+    loadBranches();
+    loadAuditLogs();
+  } catch (e) {
+    showToast('合并失败: ' + e.message, 'error');
+  }
+}
+
+async function abandonBranch() {
+  if (!currentBranchId) return;
+  
+  if (!hasPermission('owner')) {
+    showToast('权限不足（需所有者）', 'error');
+    return;
+  }
+  
+  if (!confirm('确定要废弃此分支吗？废弃后不能再编辑。')) {
+    return;
+  }
+  
+  try {
+    const res = await apiFetch(`/api/branches/${currentBranchId}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status: 'abandoned' })
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '操作失败');
+    }
+    
+    const branch = await res.json();
+    currentBranch = branch;
+    
+    showToast('分支已废弃', 'success');
+    renderBranchInfo(branch);
+    renderBranchVersionTimeline(branch.versions);
+    updateBranchButtons(branch);
+    loadBranches();
+    loadAuditLogs();
+  } catch (e) {
+    showToast('操作失败: ' + e.message, 'error');
+  }
+}
+
+async function deleteBranch() {
+  if (!currentBranchId) return;
+  
+  if (!hasPermission('owner')) {
+    showToast('权限不足（需所有者）', 'error');
+    return;
+  }
+  
+  if (!confirm('确定要删除此分支吗？此操作不可恢复。')) {
+    return;
+  }
+  
+  try {
+    const res = await apiFetch(`/api/branches/${currentBranchId}`, {
+      method: 'DELETE'
+    });
+    
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.error || '删除失败');
+    }
+    
+    showToast('分支已删除', 'success');
+    backToBranchList();
+    loadAuditLogs();
+  } catch (e) {
+    showToast('删除失败: ' + e.message, 'error');
+  }
+}
+
+function closeModalOutside(event) {
+  if (event.target.classList.contains('modal-overlay')) {
+    hideCreateDocModal();
+    hideEditModal();
+    hideTagModal();
+    hideCreateReviewModal();
+    hideAddCommentModal();
+    hideCreatePatchModal();
+    hideConflictResolveModal();
+    hideAddCollaboratorModal();
+    hideCreateBranchModal();
+    hideEditBranchModal();
+    hideThreeWayMergeModal();
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   initUserSelector();
   loadDocuments();
