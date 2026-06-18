@@ -10,7 +10,8 @@ let readingData = {
   paragraphHeatmap: {},
   readingGoals: {},
   activeReaders: {},
-  nextSessionId: 1
+  nextSessionId: 1,
+  userProfiles: {}
 };
 
 function ensureDataDir() {
@@ -45,7 +46,8 @@ function loadReadingData() {
         paragraphHeatmap,
         readingGoals: loaded.readingGoals || {},
         activeReaders: loaded.activeReaders || {},
-        nextSessionId: loaded.nextSessionId || 1
+        nextSessionId: loaded.nextSessionId || 1,
+        userProfiles: loaded.userProfiles || {}
       };
     } catch (e) {
       console.warn('阅读数据文件损坏，使用空数据:', e.message);
@@ -398,6 +400,227 @@ function setHeatmapData(documentId, heatmapArray) {
   saveReadingData();
 }
 
+function getUserReadingProfile(userId, documentId) {
+  loadReadingData();
+  
+  const userKey = String(userId);
+  const docKey = String(documentId);
+  
+  if (!readingData.userProfiles[userKey]) {
+    readingData.userProfiles[userKey] = {
+      user_id: userId,
+      documents: {},
+      global_reading_speed_wpm: null,
+      last_updated: now()
+    };
+  }
+  
+  const userProfile = readingData.userProfiles[userKey];
+  if (!userProfile.documents[docKey]) {
+    userProfile.documents[docKey] = {
+      document_id: documentId,
+      read_paragraphs: {},
+      last_read_paragraph: 0,
+      last_read_time: null,
+      total_words_read: 0,
+      total_reading_time_ms: 0,
+      reading_speed_wpm: null,
+      skipped_paragraphs: []
+    };
+  }
+  
+  return userProfile.documents[docKey];
+}
+
+function updateUserReadingProfile(userId, documentId, updates) {
+  loadReadingData();
+  
+  const userKey = String(userId);
+  const docKey = String(documentId);
+  
+  if (!readingData.userProfiles[userKey]) {
+    readingData.userProfiles[userKey] = {
+      user_id: userId,
+      documents: {},
+      global_reading_speed_wpm: null,
+      last_updated: now()
+    };
+  }
+  
+  if (!readingData.userProfiles[userKey].documents[docKey]) {
+    readingData.userProfiles[userKey].documents[docKey] = {
+      document_id: documentId,
+      read_paragraphs: {},
+      last_read_paragraph: 0,
+      last_read_time: null,
+      total_words_read: 0,
+      total_reading_time_ms: 0,
+      reading_speed_wpm: null,
+      skipped_paragraphs: []
+    };
+  }
+  
+  const docProfile = readingData.userProfiles[userKey].documents[docKey];
+  
+  if (updates.paragraphIndex !== undefined) {
+    const paraIdx = String(updates.paragraphIndex);
+    docProfile.read_paragraphs[paraIdx] = {
+      paragraph_index: updates.paragraphIndex,
+      first_read_at: docProfile.read_paragraphs[paraIdx]?.first_read_at || now(),
+      last_read_at: now(),
+      total_dwell_time_ms: (docProfile.read_paragraphs[paraIdx]?.total_dwell_time_ms || 0) + (updates.dwellTimeMs || 0),
+      read_count: (docProfile.read_paragraphs[paraIdx]?.read_count || 0) + 1
+    };
+    docProfile.last_read_paragraph = updates.paragraphIndex;
+    docProfile.last_read_time = now();
+    
+    if (updates.dwellTimeMs) {
+      docProfile.total_reading_time_ms += updates.dwellTimeMs;
+    }
+  }
+  
+  if (updates.wordsRead) {
+    docProfile.total_words_read += updates.wordsRead;
+  }
+  
+  if (updates.readingSpeedWpm) {
+    docProfile.reading_speed_wpm = updates.readingSpeedWpm;
+    readingData.userProfiles[userKey].global_reading_speed_wpm = updates.readingSpeedWpm;
+  }
+  
+  readingData.userProfiles[userKey].last_updated = now();
+  saveReadingData();
+  
+  return docProfile;
+}
+
+function detectSkippedParagraphs(userId, documentId, totalParagraphs) {
+  loadReadingData();
+  
+  const docProfile = getUserReadingProfile(userId, documentId);
+  const readIndices = Object.keys(docProfile.read_paragraphs).map(k => parseInt(k));
+  const skipped = [];
+  
+  for (let i = 0; i < totalParagraphs; i++) {
+    if (!readIndices.includes(i)) {
+      skipped.push(i);
+    }
+  }
+  
+  docProfile.skipped_paragraphs = skipped;
+  saveReadingData();
+  
+  return skipped;
+}
+
+function getReadParagraphIndices(userId, documentId) {
+  const docProfile = getUserReadingProfile(userId, documentId);
+  return Object.keys(docProfile.read_paragraphs).map(k => parseInt(k));
+}
+
+function calculateHeatScore(heatItem) {
+  const timeScore = heatItem.total_dwell_time || 0;
+  const countScore = (heatItem.read_count || 0) * 10000;
+  const readerScore = (heatItem.unique_reader_count || 0) * 20000;
+  return timeScore + countScore + readerScore;
+}
+
+function getPersonalizedRecommendations(userId, documentId, { topPercent = 0.3, minHeatScore = 1000 } = {}) {
+  loadReadingData();
+  
+  const docKey = String(documentId);
+  const heatmapData = readingData.paragraphHeatmap[docKey] || {};
+  
+  const readIndices = new Set(getReadParagraphIndices(userId, documentId));
+  
+  const heatmapWithScore = Object.values(heatmapData).map(h => ({
+    paragraph_index: h.paragraph_index,
+    total_dwell_time: h.total_dwell_time,
+    read_count: h.read_count,
+    unique_reader_count: h.unique_readers ? h.unique_readers.size : 0,
+    heat_score: calculateHeatScore({
+      total_dwell_time: h.total_dwell_time,
+      read_count: h.read_count,
+      unique_reader_count: h.unique_readers ? h.unique_readers.size : 0
+    })
+  }));
+  
+  const unreadParagraphs = heatmapWithScore.filter(h => !readIndices.has(h.paragraph_index));
+  unreadParagraphs.sort((a, b) => b.heat_score - a.heat_score);
+  
+  const totalUnread = unreadParagraphs.length;
+  const takeCount = Math.max(1, Math.ceil(totalUnread * topPercent));
+  const topRecommendations = unreadParagraphs
+    .slice(0, takeCount)
+    .filter(h => h.heat_score >= minHeatScore);
+  
+  const docProfile = getUserReadingProfile(userId, documentId);
+  
+  return {
+    user_id: userId,
+    document_id: documentId,
+    read_paragraph_count: readIndices.size,
+    unread_paragraph_count: totalUnread,
+    reading_progress: docProfile,
+    recommendations: topRecommendations,
+    recommendation_count: topRecommendations.length,
+    generated_at: now()
+  };
+}
+
+function getUserReadingProfileGlobal(userId) {
+  loadReadingData();
+  
+  const userKey = String(userId);
+  if (!readingData.userProfiles[userKey]) {
+    readingData.userProfiles[userKey] = {
+      user_id: userId,
+      documents: {},
+      global_reading_speed_wpm: null,
+      last_updated: now()
+    };
+    saveReadingData();
+  }
+  
+  return readingData.userProfiles[userKey];
+}
+
+function bulkSetUserProfile(userId, documentId, profileData) {
+  loadReadingData();
+  
+  const userKey = String(userId);
+  const docKey = String(documentId);
+  
+  if (!readingData.userProfiles[userKey]) {
+    readingData.userProfiles[userKey] = {
+      user_id: userId,
+      documents: {},
+      global_reading_speed_wpm: null,
+      last_updated: now()
+    };
+  }
+  
+  readingData.userProfiles[userKey].documents[docKey] = {
+    document_id: documentId,
+    read_paragraphs: profileData.read_paragraphs || {},
+    last_read_paragraph: profileData.last_read_paragraph || 0,
+    last_read_time: profileData.last_read_time || null,
+    total_words_read: profileData.total_words_read || 0,
+    total_reading_time_ms: profileData.total_reading_time_ms || 0,
+    reading_speed_wpm: profileData.reading_speed_wpm || null,
+    skipped_paragraphs: profileData.skipped_paragraphs || []
+  };
+  
+  if (profileData.reading_speed_wpm) {
+    readingData.userProfiles[userKey].global_reading_speed_wpm = profileData.reading_speed_wpm;
+  }
+  
+  readingData.userProfiles[userKey].last_updated = now();
+  saveReadingData();
+  
+  return readingData.userProfiles[userKey].documents[docKey];
+}
+
 module.exports = {
   startReadingSession,
   updateReadingProgress,
@@ -412,5 +635,12 @@ module.exports = {
   getReadingProgress,
   getUserReadingHistory,
   setHeatmapData,
-  loadReadingData
+  loadReadingData,
+  getUserReadingProfile,
+  updateUserReadingProfile,
+  detectSkippedParagraphs,
+  getReadParagraphIndices,
+  getPersonalizedRecommendations,
+  getUserReadingProfileGlobal,
+  bulkSetUserProfile
 };

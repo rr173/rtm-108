@@ -131,7 +131,81 @@
             <div class="loading">加载数据中...</div>
           </div>
         </div>
+
+        <div class="panel-section">
+          <div class="section-header">
+            <h3>⭐ 推荐阅读</h3>
+            <span id="recCount" class="badge badge-info">0</span>
+          </div>
+          <div id="recommendationList" class="recommendation-list">
+            <div class="loading">加载推荐中...</div>
+          </div>
+        </div>
+
+        <div class="panel-section">
+          <div class="section-header">
+            <h3>📝 我的划线</h3>
+            <span id="highlightCount" class="badge badge-info">0</span>
+          </div>
+          <div id="myHighlightsList" class="my-highlights-list">
+            <div class="empty-tip">暂无划线，选中文本后点击"添加批注创建第一条划线</div>
+          </div>
+        </div>
       </aside>
+    </div>
+  </div>
+
+  <div id="highlightPopover" class="highlight-popover hidden">
+    <div class="popover-arrow"></div>
+    <div class="popover-content">
+      <textarea id="highlightComment" class="form-control highlight-comment" placeholder="输入批注内容（可选）..."></textarea>
+      <div class="highlight-meta">
+        <label class="visibility-label">可见性：</label>
+        <label class="radio-option">
+          <input type="radio" name="visibility" value="public" checked>
+          <span>🌐 公开</span>
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="visibility" value="private">
+          <span>🔒 私有</span>
+        </label>
+      </div>
+      <div class="popover-actions">
+        <button id="cancelHighlightBtn" class="btn btn-sm btn-secondary">取消</button>
+        <button id="saveHighlightBtn" class="btn btn-sm btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="highlightDetailModal" class="modal hidden">
+    <div class="modal-overlay"></div>
+    <div class="modal-content highlight-detail-modal">
+      <div class="modal-header">
+        <h3 id="detailModalTitle">划线详情</h3>
+        <button class="modal-close-btn" id="closeDetailModal">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="detail-selected-text" id="detailSelectedText"></div>
+        <div class="detail-meta" id="detailMeta"></div>
+        <label class="form-label">批注内容：</label>
+        <textarea id="detailCommentText" class="form-control" rows="4"></textarea>
+        <div class="highlight-meta" style="margin-top: 12px;">
+          <label class="visibility-label">可见性：</label>
+          <label class="radio-option">
+            <input type="radio" name="detailVisibility" value="public">
+            <span>🌐 公开</span>
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="detailVisibility" value="private">
+            <span>🔒 私有</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="deleteHighlightBtn" class="btn btn-danger btn-sm" style="margin-right:auto;">删除划线</button>
+        <button id="cancelEditHighlightBtn" class="btn btn-secondary btn-sm">取消</button>
+        <button id="saveEditHighlightBtn" class="btn btn-primary btn-sm">保存修改</button>
+      </div>
     </div>
   </div>
 

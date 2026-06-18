@@ -12,6 +12,16 @@ class ReadingAnalysis {
     this.currentTab = 'overall';
     this.paragraphs = [];
 
+    this.recommendations = [];
+    this.recommendedParagraphIndices = new Set();
+    this.readParagraphsByMe = new Set();
+
+    this.highlights = [];
+    this.editingHighlight = null;
+    this.selectionState = null;
+
+    this.paragraphDwellTimers = new Map();
+
     if (!localStorage.getItem('currentUserId')) {
       localStorage.setItem('currentUserId', 'user-admin');
     }
@@ -71,6 +81,53 @@ class ReadingAnalysis {
     document.getElementById('setGoalBtn').addEventListener('click', () => {
       this.setReadingGoal();
     });
+
+    document.getElementById('cancelHighlightBtn').addEventListener('click', () => {
+      this.hideHighlightPopover();
+      window.getSelection().removeAllRanges();
+    });
+
+    document.getElementById('saveHighlightBtn').addEventListener('click', () => {
+      this.saveNewHighlight();
+    });
+
+    document.getElementById('closeDetailModal').addEventListener('click', () => {
+      this.closeHighlightDetailModal();
+    });
+
+    document.getElementById('cancelEditHighlightBtn').addEventListener('click', () => {
+      this.closeHighlightDetailModal();
+    });
+
+    document.getElementById('saveEditHighlightBtn').addEventListener('click', () => {
+      this.saveHighlightEdit();
+    });
+
+    document.getElementById('deleteHighlightBtn').addEventListener('click', () => {
+      this.deleteHighlight();
+    });
+
+    document.querySelector('#highlightDetailModal .modal-overlay').addEventListener('click', () => {
+      this.closeHighlightDetailModal();
+    });
+
+    document.addEventListener('selectionchange', () => {
+      this.handleTextSelection();
+    });
+
+    document.addEventListener('click', (e) => {
+      const popover = document.getElementById('highlightPopover');
+      if (!popover.contains(e.target) && !e.target.closest('.highlight-span')) {
+        this.hideHighlightPopover();
+      }
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        this.hideHighlightPopover();
+        this.closeHighlightDetailModal();
+      }
+    });
   }
 
   switchTab(tab) {
@@ -88,7 +145,12 @@ class ReadingAnalysis {
       this.document = data;
       document.getElementById('documentTitle').textContent = data.title;
       this.parseParagraphs();
+      await Promise.all([
+        this.loadRecommendations(),
+        this.loadHighlights()
+      ]);
       this.renderDocument();
+      this.setupParagraphDwellTracking();
     } catch (e) {
       console.error('加载文档失败:', e);
       document.getElementById('documentContent').innerHTML = 
@@ -147,15 +209,604 @@ class ReadingAnalysis {
         ? `${readCount}人阅读 · ${minutes}分钟` 
         : '暂未阅读';
 
+      const starHtml = this.recommendedParagraphIndices.has(index) && !this.readParagraphsByMe.has(index)
+        ? `<span class="recommendation-star" title="推荐阅读：未读但大家都觉得重要" data-paragraph-index="${index}">⭐</span>`
+        : '';
+
+      const readClass = this.readParagraphsByMe.has(index) ? ' read' : '';
+
+      const contentWithHighlights = this.renderParagraphTextWithHighlights(para, index);
+
       return `
-        <div class="heatmap-paragraph ${heatClass}" data-paragraph-index="${index}">
+        <div class="heatmap-paragraph ${heatClass}${readClass}" data-paragraph-index="${index}">
+          ${starHtml}
           <div class="paragraph-meta">${metaText}</div>
-          <p>${this.escapeHtml(para)}</p>
+          <p>${contentWithHighlights}</p>
         </div>
       `;
     }).join('');
 
     container.innerHTML = html;
+
+    this.attachParagraphEventListeners();
+  }
+
+  renderParagraphTextWithHighlights(text, paragraphIndex) {
+    const escapedText = this.escapeHtml(text);
+    const paraHighlights = this.highlights.filter(h => h.paragraph_index === paragraphIndex);
+
+    if (paraHighlights.length === 0) {
+      return escapedText;
+    }
+
+    const segments = [];
+    let cursor = 0;
+    const textLen = escapedText.length;
+
+    const sortedHighlights = [...paraHighlights].sort((a, b) => a.start_offset - b.start_offset);
+
+    sortedHighlights.forEach(hl => {
+      const start = Math.min(hl.start_offset, textLen);
+      const end = Math.min(hl.end_offset, textLen);
+
+      if (start >= textLen || start >= end) {
+        return;
+      }
+
+      if (start > cursor) {
+        segments.push({
+          type: 'text',
+          content: escapedText.substring(cursor, start)
+        });
+      }
+
+      segments.push({
+        type: 'highlight',
+        start,
+        end,
+        highlight: hl,
+        content: escapedText.substring(start, end)
+      });
+
+      cursor = Math.max(cursor, end);
+    });
+
+    if (cursor < textLen) {
+      segments.push({
+        type: 'text',
+        content: escapedText.substring(cursor)
+      });
+    }
+
+    return segments.map(seg => {
+      if (seg.type === 'text') {
+        return seg.content;
+      }
+
+      const hl = seg.highlight;
+      const isOwn = hl.created_by === this.currentUserId;
+      const className = isOwn ? 'highlight-span highlight-own' : 'highlight-span highlight-other';
+      const visibilityLabel = hl.visibility === 'public' ? '🌐 公开' : '🔒 私有';
+      const visibilityClass = hl.visibility === 'public' ? 'tooltip-public' : 'tooltip-private';
+      const commentHtml = hl.comment_text 
+        ? `<div class="tooltip-comment">${this.escapeHtml(hl.comment_text)}</div>`
+        : '';
+      const selectedPreview = hl.selected_text && hl.selected_text.length > 60
+        ? this.escapeHtml(hl.selected_text.substring(0, 60)) + '...'
+        : this.escapeHtml(hl.selected_text || '');
+      const authorDisplay = isOwn ? '我' : this.escapeHtml(hl.created_by_username || hl.created_by);
+
+      const tooltipHtml = `
+        <div class="highlight-tooltip">
+          <div class="tooltip-author">
+            ${authorDisplay}
+            <span class="tooltip-visibility ${visibilityClass}">${visibilityLabel}</span>
+          </div>
+          ${commentHtml}
+          ${selectedPreview ? `<div class="tooltip-selected">「${selectedPreview}」</div>` : ''}
+        </div>
+      `;
+
+      return `<span class="${className}" data-highlight-id="${hl.id}" title="">${seg.content}${tooltipHtml}</span>`;
+    }).join('');
+  }
+
+  attachParagraphEventListeners() {
+    const container = document.getElementById('documentContent');
+
+    container.querySelectorAll('.recommendation-star').forEach(star => {
+      star.addEventListener('click', (e) => {
+        const pIndex = parseInt(e.currentTarget.dataset.paragraphIndex);
+        this.scrollToParagraph(pIndex);
+      });
+    });
+
+    container.querySelectorAll('.highlight-span').forEach(span => {
+      span.addEventListener('click', (e) => {
+        const hlId = parseInt(e.currentTarget.dataset.highlightId);
+        const hl = this.highlights.find(h => h.id === hlId);
+        if (hl) {
+          e.stopPropagation();
+          if (hl.created_by === this.currentUserId) {
+            this.openHighlightDetailModal(hl);
+          }
+        }
+      });
+    });
+
+    container.querySelectorAll('.heatmap-paragraph').forEach(paraEl => {
+      paraEl.addEventListener('mouseenter', (e) => {
+        const pIndex = parseInt(e.currentTarget.dataset.paragraphIndex);
+        this.startParagraphDwell(pIndex);
+      });
+
+      paraEl.addEventListener('mouseleave', (e) => {
+        const pIndex = parseInt(e.currentTarget.dataset.paragraphIndex);
+        this.endParagraphDwell(pIndex);
+      });
+    });
+  }
+
+  setupParagraphDwellTracking() {
+    setInterval(() => {
+      this.paragraphDwellTimers.forEach((startTime, pIndex) => {
+        const currentDwell = Date.now() - startTime;
+        if (currentDwell >= 3000 && !this.readParagraphsByMe.has(pIndex)) {
+          this.markParagraphAsRead(pIndex);
+        }
+      });
+    }, 1000);
+  }
+
+  startParagraphDwell(paragraphIndex) {
+    if (!this.paragraphDwellTimers.has(paragraphIndex)) {
+      this.paragraphDwellTimers.set(paragraphIndex, Date.now());
+    }
+  }
+
+  endParagraphDwell(paragraphIndex) {
+    if (this.paragraphDwellTimers.has(paragraphIndex)) {
+      const startTime = this.paragraphDwellTimers.get(paragraphIndex);
+      const dwellMs = Date.now() - startTime;
+      this.paragraphDwellTimers.delete(paragraphIndex);
+
+      if (dwellMs >= 2000) {
+        this.reportParagraphProgress(paragraphIndex, dwellMs);
+      }
+    }
+  }
+
+  markParagraphAsRead(paragraphIndex) {
+    this.readParagraphsByMe.add(paragraphIndex);
+    const paraEl = document.querySelector(`.heatmap-paragraph[data-paragraph-index="${paragraphIndex}"]`);
+    if (paraEl) {
+      paraEl.classList.add('read');
+      const star = paraEl.querySelector('.recommendation-star');
+      if (star) {
+        star.remove();
+      }
+    }
+    if (this.recommendedParagraphIndices.has(paragraphIndex)) {
+      this.recommendedParagraphIndices.delete(paragraphIndex);
+      this.recommendations = this.recommendations.filter(r => r.paragraph_index !== paragraphIndex);
+      this.renderRecommendations();
+    }
+  }
+
+  async reportParagraphProgress(paragraphIndex, dwellMs) {
+    try {
+      await this.apiFetch(`/api/documents/${this.documentId}/reading/progress`, {
+        method: 'POST',
+        body: JSON.stringify({
+          paragraph_index: paragraphIndex,
+          dwell_time_ms: dwellMs,
+          words_read: this.paragraphs[paragraphIndex]?.length || 0
+        })
+      });
+    } catch (e) {
+      console.warn('上报段落进度失败(不影响功能):', e);
+    }
+  }
+
+  async loadRecommendations() {
+    try {
+      const response = await this.apiFetch(`/api/documents/${this.documentId}/reading/recommendations`);
+      if (response.ok) {
+        const data = await response.json();
+        this.recommendations = data.recommendations || [];
+        this.readParagraphsByMe = new Set(data.read_paragraph_indices || []);
+        this.recommendedParagraphIndices = new Set(this.recommendations.map(r => r.paragraph_index));
+        this.renderRecommendations();
+      }
+    } catch (e) {
+      console.error('加载推荐失败:', e);
+    }
+  }
+
+  renderRecommendations() {
+    const countEl = document.getElementById('recCount');
+    const listEl = document.getElementById('recommendationList');
+
+    countEl.textContent = this.recommendations.length;
+
+    if (this.recommendations.length === 0) {
+      listEl.innerHTML = '<div class="empty-tip">暂无推荐。继续阅读，或等待其他读者反馈产生更多推荐内容。</div>';
+      return;
+    }
+
+    const html = this.recommendations.slice(0, 10).map(rec => {
+      const preview = this.paragraphs[rec.paragraph_index] || '';
+      const previewText = preview.length > 80 ? preview.substring(0, 80) + '...' : preview;
+      return `
+        <div class="recommendation-item" data-paragraph-index="${rec.paragraph_index}">
+          <span class="rec-star">⭐</span>
+          <div class="rec-content">
+            <div class="rec-header">
+              <span class="rec-para-label">第 ${rec.paragraph_index + 1} 段</span>
+              <span class="rec-heat">🔥 ${rec.heat_score}</span>
+            </div>
+            <div class="rec-preview">${this.escapeHtml(previewText)}</div>
+            <div class="rec-readers">👥 ${rec.unique_reader_count} 人认为重要</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    listEl.innerHTML = html;
+
+    listEl.querySelectorAll('.recommendation-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        const pIndex = parseInt(e.currentTarget.dataset.paragraphIndex);
+        this.scrollToParagraph(pIndex);
+      });
+    });
+  }
+
+  scrollToParagraph(paragraphIndex) {
+    const paraEl = document.querySelector(`.heatmap-paragraph[data-paragraph-index="${paragraphIndex}"]`);
+    if (paraEl) {
+      paraEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      paraEl.style.outline = '2px solid #f59e0b';
+      paraEl.style.transition = 'outline 0.3s';
+      setTimeout(() => {
+        paraEl.style.outline = 'none';
+      }, 2000);
+    }
+  }
+
+  async loadHighlights() {
+    try {
+      const response = await this.apiFetch(`/api/documents/${this.documentId}/highlights`);
+      if (response.ok) {
+        const data = await response.json();
+        this.highlights = Array.isArray(data) ? data : (data.highlights || []);
+        this.renderMyHighlights();
+      }
+    } catch (e) {
+      console.error('加载划线失败:', e);
+    }
+  }
+
+  renderMyHighlights() {
+    const countEl = document.getElementById('highlightCount');
+    const listEl = document.getElementById('myHighlightsList');
+
+    const sortedHighlights = [...this.highlights].sort((a, b) => {
+      if (a.paragraph_index !== b.paragraph_index) {
+        return a.paragraph_index - b.paragraph_index;
+      }
+      return a.start_offset - b.start_offset;
+    });
+
+    const myCount = sortedHighlights.filter(h => h.created_by === this.currentUserId).length;
+    const visibleOthersCount = sortedHighlights.filter(h => h.created_by !== this.currentUserId && h.visibility === 'public').length;
+    countEl.textContent = myCount + visibleOthersCount > 0
+      ? `${myCount + visibleOthersCount}`
+      : '0';
+
+    if (sortedHighlights.length === 0) {
+      listEl.innerHTML = '<div class="empty-tip">暂无划线。选中文本后会弹出「添加批注」浮层，创建你的第一条划线吧！</div>';
+      return;
+    }
+
+    const html = sortedHighlights.map(hl => {
+      const isOwn = hl.created_by === this.currentUserId;
+      const itemClass = isOwn ? 'highlight-own' : 'highlight-other';
+      const visibilityClass = hl.visibility === 'public' ? 'vis-public' : 'vis-private';
+      const visibilityLabel = hl.visibility === 'public' ? '🌐 公开' : '🔒 私有';
+      const authorDisplay = isOwn ? '我' : this.escapeHtml(hl.created_by_username || hl.created_by);
+      const comment = hl.comment_text ? this.escapeHtml(hl.comment_text) : '<span style="opacity:0.5;">（无批注）</span>';
+      const selectedPreview = hl.selected_text && hl.selected_text.length > 50
+        ? this.escapeHtml(hl.selected_text.substring(0, 50)) + '...'
+        : this.escapeHtml(hl.selected_text || '');
+
+      return `
+        <div class="highlight-item ${itemClass}" data-highlight-id="${hl.id}" data-paragraph-index="${hl.paragraph_index}">
+          <div class="highlight-item-top">
+            <span class="highlight-location">📍 第 ${hl.paragraph_index + 1} 段 · 字${hl.start_offset}-${hl.end_offset}</span>
+            <span class="highlight-visibility-tag ${visibilityClass}">${visibilityLabel}</span>
+          </div>
+          <div class="highlight-author">👤 ${authorDisplay}</div>
+          <div class="highlight-comment-preview">${comment}</div>
+          <div class="highlight-selected-text">${selectedPreview}</div>
+        </div>
+      `;
+    }).join('');
+
+    listEl.innerHTML = html;
+
+    listEl.querySelectorAll('.highlight-item').forEach(item => {
+      item.addEventListener('click', (e) => {
+        const hlId = parseInt(e.currentTarget.dataset.highlightId);
+        const pIndex = parseInt(e.currentTarget.dataset.paragraphIndex);
+        const hl = this.highlights.find(h => h.id === hlId);
+        if (hl && hl.created_by === this.currentUserId) {
+          this.openHighlightDetailModal(hl);
+        }
+        this.scrollToParagraph(pIndex);
+      });
+    });
+  }
+
+  handleTextSelection() {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const selectedText = selection.toString().trim();
+
+    if (!selectedText || selectedText.length < 2) {
+      this.hideHighlightPopover();
+      return;
+    }
+
+    const container = document.getElementById('documentContent');
+    if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) {
+      this.hideHighlightPopover();
+      return;
+    }
+
+    const paraEl = range.startContainer.parentElement.closest('.heatmap-paragraph');
+    const endParaEl = range.endContainer.parentElement.closest('.heatmap-paragraph');
+
+    if (!paraEl || paraEl !== endParaEl) {
+      this.hideHighlightPopover();
+      return;
+    }
+
+    const paragraphIndex = parseInt(paraEl.dataset.paragraphIndex);
+    const paragraphText = this.paragraphs[paragraphIndex] || '';
+    const preRange = document.createRange();
+    preRange.selectNodeContents(paraEl.querySelector('p'));
+    preRange.setEnd(range.startContainer, range.startOffset);
+    const startOffset = this.countActualTextOffset(paraEl.querySelector('p'), preRange.toString());
+    preRange.setEnd(range.endContainer, range.endOffset);
+    const endOffset = this.countActualTextOffset(paraEl.querySelector('p'), preRange.toString());
+
+    if (startOffset < 0 || endOffset <= startOffset) {
+      return;
+    }
+
+    const actualSelected = paragraphText.substring(startOffset, endOffset);
+    this.selectionState = {
+      paragraphIndex,
+      startOffset,
+      endOffset,
+      selectedText: actualSelected || selectedText,
+      range
+    };
+
+    this.showHighlightPopover(range);
+  }
+
+  countActualTextOffset(paragraphPElement, textUntilSelection) {
+    let cleanText = '';
+    const walker = document.createTreeWalker(
+      paragraphPElement,
+      NodeFilter.SHOW_TEXT,
+      null,
+      false
+    );
+
+    let node;
+    while (walker.nextNode()) {
+      cleanText += walker.currentNode.nodeValue;
+    }
+
+    const targetLen = Math.min(textUntilSelection.length, cleanText.length);
+    return targetLen;
+  }
+
+  showHighlightPopover(range) {
+    const popover = document.getElementById('highlightPopover');
+    const rect = range.getBoundingClientRect();
+    const scrollX = window.pageXOffset || document.documentElement.scrollLeft;
+    const scrollY = window.pageYOffset || document.documentElement.scrollTop;
+
+    popover.classList.remove('hidden');
+    const popoverRect = popover.getBoundingClientRect();
+
+    let left = rect.left + scrollX + rect.width / 2 - popoverRect.width / 2;
+    let top = rect.top + scrollY - popoverRect.height - 12;
+
+    if (left < 10) left = 10;
+    if (left + popoverRect.width > window.innerWidth - 10) {
+      left = window.innerWidth - popoverRect.width - 10;
+    }
+    if (top < scrollY + 10) {
+      top = rect.bottom + scrollY + 12;
+      popover.querySelector('.popover-arrow').style.top = '-6px';
+      popover.querySelector('.popover-arrow').style.transform = 'rotate(45deg)';
+    } else {
+      popover.querySelector('.popover-arrow').style.top = 'auto';
+      popover.querySelector('.popover-arrow').style.bottom = '-6px';
+      popover.querySelector('.popover-arrow').style.transform = 'rotate(225deg)';
+    }
+
+    popover.style.left = left + 'px';
+    popover.style.top = top + 'px';
+
+    document.getElementById('highlightComment').value = '';
+    document.getElementById('highlightComment').focus();
+  }
+
+  hideHighlightPopover() {
+    document.getElementById('highlightPopover').classList.add('hidden');
+    this.selectionState = null;
+  }
+
+  async saveNewHighlight() {
+    if (!this.selectionState) return;
+
+    const commentText = document.getElementById('highlightComment').value.trim();
+    const visibility = document.querySelector('input[name="visibility"]:checked')?.value || 'public';
+
+    try {
+      const response = await this.apiFetch(`/api/documents/${this.documentId}/highlights`, {
+        method: 'POST',
+        body: JSON.stringify({
+          paragraph_index: this.selectionState.paragraphIndex,
+          start_offset: this.selectionState.startOffset,
+          end_offset: this.selectionState.endOffset,
+          selected_text: this.selectionState.selectedText,
+          comment_text: commentText,
+          visibility,
+          created_by_username: this.currentUserName
+        })
+      });
+
+      if (response.ok) {
+        const newHl = await response.json();
+        this.highlights.push(newHl);
+        this.renderDocument();
+        this.renderMyHighlights();
+        this.hideHighlightPopover();
+        window.getSelection().removeAllRanges();
+        this.showToast('划线保存成功', 'success');
+      } else {
+        const err = await response.json().catch(() => ({}));
+        this.showToast('保存失败：' + (err.error || '未知错误'), 'error');
+      }
+    } catch (e) {
+      console.error('保存划线失败:', e);
+      this.showToast('保存失败，请重试', 'error');
+    }
+  }
+
+  openHighlightDetailModal(highlight) {
+    this.editingHighlight = highlight;
+
+    const modal = document.getElementById('highlightDetailModal');
+    modal.classList.remove('hidden');
+
+    const isOwn = highlight.created_by === this.currentUserId;
+
+    document.getElementById('detailModalTitle').textContent = isOwn ? '编辑我的划线' : '划线详情';
+    document.getElementById('detailSelectedText').textContent = highlight.selected_text || '';
+
+    const metaItems = [
+      `<span class="meta-item">📍 第 ${highlight.paragraph_index + 1} 段</span>`,
+      `<span class="meta-item">👤 ${this.escapeHtml(highlight.created_by_username || highlight.created_by || '匿名')}</span>`,
+      `<span class="meta-item">🕐 ${this.formatTime(highlight.created_at)}</span>`
+    ];
+    document.getElementById('detailMeta').innerHTML = metaItems.join('');
+
+    document.getElementById('detailCommentText').value = highlight.comment_text || '';
+    document.getElementById('detailCommentText').disabled = !isOwn;
+
+    const pubRadio = document.querySelector('input[name="detailVisibility"][value="public"]');
+    const privRadio = document.querySelector('input[name="detailVisibility"][value="private"]');
+    if (highlight.visibility === 'public') {
+      pubRadio.checked = true;
+    } else {
+      privRadio.checked = true;
+    }
+    pubRadio.disabled = !isOwn;
+    privRadio.disabled = !isOwn;
+
+    document.getElementById('deleteHighlightBtn').style.display = isOwn ? 'inline-block' : 'none';
+    document.getElementById('saveEditHighlightBtn').style.display = isOwn ? 'inline-block' : 'none';
+  }
+
+  closeHighlightDetailModal() {
+    document.getElementById('highlightDetailModal').classList.add('hidden');
+    this.editingHighlight = null;
+  }
+
+  async saveHighlightEdit() {
+    if (!this.editingHighlight) return;
+
+    const commentText = document.getElementById('detailCommentText').value.trim();
+    const visibility = document.querySelector('input[name="detailVisibility"]:checked')?.value || 'public';
+
+    try {
+      const response = await this.apiFetch(`/api/highlights/${this.editingHighlight.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          comment_text: commentText,
+          visibility
+        })
+      });
+
+      if (response.ok) {
+        const updated = await response.json();
+        const idx = this.highlights.findIndex(h => h.id === updated.id);
+        if (idx >= 0) {
+          this.highlights[idx] = updated;
+        }
+        this.renderDocument();
+        this.renderMyHighlights();
+        this.closeHighlightDetailModal();
+        this.showToast('划线已更新', 'success');
+      } else {
+        this.showToast('更新失败', 'error');
+      }
+    } catch (e) {
+      console.error('更新划线失败:', e);
+      this.showToast('更新失败，请重试', 'error');
+    }
+  }
+
+  async deleteHighlight() {
+    if (!this.editingHighlight) return;
+    if (!confirm('确定要删除这条划线吗？此操作不可撤销。')) return;
+
+    try {
+      const response = await this.apiFetch(`/api/highlights/${this.editingHighlight.id}`, {
+        method: 'DELETE'
+      });
+
+      if (response.ok) {
+        const hlId = this.editingHighlight.id;
+        this.highlights = this.highlights.filter(h => h.id !== hlId);
+        this.renderDocument();
+        this.renderMyHighlights();
+        this.closeHighlightDetailModal();
+        this.showToast('划线已删除', 'success');
+      } else {
+        this.showToast('删除失败', 'error');
+      }
+    } catch (e) {
+      console.error('删除划线失败:', e);
+      this.showToast('删除失败，请重试', 'error');
+    }
+  }
+
+  formatTime(timestamp) {
+    if (!timestamp) return '';
+    try {
+      const d = new Date(timestamp);
+      return d.toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch (e) {
+      return '';
+    }
   }
 
   async loadSummary(force = false) {
@@ -264,7 +915,9 @@ class ReadingAnalysis {
 
     this.heatmapData = this.readingStats.heatmap || [];
     this.activeReaders = this.readingStats.active_readers || [];
-    this.renderDocument();
+    if (this.paragraphs.length > 0 && this.highlights.length !== undefined) {
+      this.renderDocument();
+    }
     this.renderActiveReaders();
   }
 
@@ -386,6 +1039,18 @@ class ReadingAnalysis {
         type: 'subscribe_reading',
         documentId: this.documentId
       }));
+      this.ws.send(JSON.stringify({
+        type: 'subscribe_highlights',
+        documentId: this.documentId
+      }));
+      this.ws.send(JSON.stringify({
+        type: 'subscribe_user_highlights',
+        documentId: this.documentId
+      }));
+      this.ws.send(JSON.stringify({
+        type: 'subscribe_recommendations',
+        documentId: this.documentId
+      }));
     };
 
     this.ws.onmessage = (event) => {
@@ -422,9 +1087,59 @@ class ReadingAnalysis {
         }
         if (data.heatmap) {
           this.heatmapData = data.heatmap;
-          this.renderDocument();
+          if (this.paragraphs.length > 0) {
+            this.renderDocument();
+          }
         }
         break;
+
+      case 'highlight_created':
+      case 'highlight_updated':
+        if (data.highlight && data.documentId === this.documentId) {
+          const hl = data.highlight;
+          const isVisible = hl.visibility === 'public' || hl.created_by === this.currentUserId;
+          if (!isVisible) break;
+
+          const idx = this.highlights.findIndex(h => h.id === hl.id);
+          if (idx >= 0) {
+            this.highlights[idx] = hl;
+          } else {
+            this.highlights.push(hl);
+            if (data.type === 'highlight_created' && hl.created_by !== this.currentUserId) {
+              this.showToast(`👥 ${hl.created_by_username || '有用户'} 在第${hl.paragraph_index + 1}段新增了划线`, 'info');
+            }
+          }
+          this.renderDocument();
+          this.renderMyHighlights();
+        }
+        break;
+
+      case 'highlight_deleted':
+        if (data.documentId === this.documentId) {
+          const hlId = data.highlight_id;
+          const beforeLen = this.highlights.length;
+          this.highlights = this.highlights.filter(h => h.id !== hlId);
+          if (this.highlights.length !== beforeLen) {
+            this.renderDocument();
+            this.renderMyHighlights();
+          }
+        }
+        break;
+
+      case 'recommendations_updated':
+        if (data.recommendations) {
+          this.recommendations = data.recommendations;
+          this.recommendedParagraphIndices = new Set(this.recommendations.map(r => r.paragraph_index));
+          if (data.read_paragraph_indices) {
+            this.readParagraphsByMe = new Set(data.read_paragraph_indices);
+          }
+          this.renderRecommendations();
+          if (this.paragraphs.length > 0) {
+            this.renderDocument();
+          }
+        }
+        break;
+
       case 'error':
         console.error('WebSocket 错误:', data.message);
         break;

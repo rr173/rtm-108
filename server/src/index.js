@@ -193,8 +193,28 @@ const {
   setReadingGoal,
   updateReadingProgressForGoal,
   getReadingProgress,
-  getUserReadingHistory
+  getUserReadingHistory,
+  getUserReadingProfile,
+  updateUserReadingProfile,
+  getPersonalizedRecommendations,
+  detectSkippedParagraphs,
+  getUserReadingProfileGlobal,
+  getReadParagraphIndices
 } = require('./readingService');
+
+const {
+  VISIBILITY,
+  createHighlight,
+  updateHighlight,
+  deleteHighlight,
+  getHighlightById,
+  listMyHighlightsByDocument,
+  listPublicHighlightsByDocument,
+  listAllHighlightsForDocument,
+  listPublicHighlightsByUser,
+  getDocumentHighlightStats,
+  bulkCreateHighlights
+} = require('./highlightService');
 
 const app = express();
 const server = http.createServer(app);
@@ -3038,6 +3058,292 @@ app.get('/api/reading/history', (req, res) => {
     const limit = req.query.limit ? parseInt(req.query.limit) : 10;
     const history = getUserReadingHistory(userId, limit);
     res.json({ history });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============ 个性化推荐 API ============
+
+app.get(
+  '/api/documents/:id/reading/recommendations',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const userId = req.currentUser.id;
+      if (!userId) {
+        return res.status(401).json({ error: '需要登录' });
+      }
+      const topPercent = req.query.top_percent ? parseFloat(req.query.top_percent) : 0.3;
+      const minHeatScore = req.query.min_score ? parseInt(req.query.min_score) : 1000;
+
+      const recommendations = getPersonalizedRecommendations(userId, docId, { topPercent, minHeatScore });
+
+      res.json(recommendations);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/documents/:id/reading/profile',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const userId = req.currentUser.id;
+      if (!userId) {
+        return res.status(401).json({ error: '需要登录' });
+      }
+      const profile = getUserReadingProfile(userId, docId);
+      const globalProfile = getUserReadingProfileGlobal(userId);
+      res.json({
+        document_profile: profile,
+        global_profile: {
+          user_id: globalProfile.user_id,
+          global_reading_speed_wpm: globalProfile.global_reading_speed_wpm,
+          last_updated: globalProfile.last_updated,
+          document_count: Object.keys(globalProfile.documents).length
+        }
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents/:id/reading/profile',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const userId = req.currentUser.id;
+      if (!userId) {
+        return res.status(401).json({ error: '需要登录' });
+      }
+
+      const { paragraph_index, dwell_time_ms, words_read, reading_speed_wpm, total_paragraphs } = req.body;
+
+      const updates = {};
+      if (paragraph_index !== undefined) {
+        updates.paragraphIndex = parseInt(paragraph_index);
+      }
+      if (dwell_time_ms !== undefined) {
+        updates.dwellTimeMs = parseInt(dwell_time_ms);
+      }
+      if (words_read !== undefined) {
+        updates.wordsRead = parseInt(words_read);
+      }
+      if (reading_speed_wpm !== undefined) {
+        updates.readingSpeedWpm = parseFloat(reading_speed_wpm);
+      }
+
+      const docProfile = updateUserReadingProfile(userId, docId, updates);
+
+      if (total_paragraphs !== undefined) {
+        detectSkippedParagraphs(userId, docId, parseInt(total_paragraphs));
+      }
+
+      const refreshedProfile = getUserReadingProfile(userId, docId);
+      const recommendations = getPersonalizedRecommendations(userId, docId);
+
+      wsService.notifyReadingRecommendationUpdate(docId, userId, recommendations);
+
+      res.json({
+        document_profile: refreshedProfile,
+        recommendations,
+        updated: true
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+// ============ 划线批注 API ============
+
+app.get(
+  '/api/documents/:id/highlights',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const userId = req.currentUser.id;
+      const scope = req.query.scope || 'all';
+
+      let highlights = [];
+      let stats = null;
+
+      switch (scope) {
+        case 'mine':
+          if (!userId) {
+            return res.status(401).json({ error: '需要登录' });
+          }
+          highlights = listMyHighlightsByDocument(docId, userId);
+          break;
+        case 'public':
+          highlights = listPublicHighlightsByDocument(docId, userId);
+          break;
+        case 'all':
+        default:
+          highlights = listAllHighlightsForDocument(docId, userId);
+          break;
+      }
+
+      stats = getDocumentHighlightStats(docId, userId);
+
+      res.json({
+        highlights,
+        stats,
+        scope,
+        total_count: highlights.length
+      });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.post(
+  '/api/documents/:id/highlights',
+  requireDocPermission(ROLES.VIEWER),
+  (req, res) => {
+    try {
+      const docId = parseInt(req.params.id);
+      const userId = req.currentUser.id;
+      const userName = req.currentUser.name;
+
+      if (!userId) {
+        return res.status(401).json({ error: '需要登录' });
+      }
+
+      const {
+        paragraph_index,
+        start_offset,
+        end_offset,
+        selected_text,
+        comment_text,
+        visibility
+      } = req.body;
+
+      const result = createHighlight({
+        document_id: docId,
+        paragraph_index,
+        start_offset,
+        end_offset,
+        selected_text,
+        comment_text,
+        visibility: visibility || VISIBILITY.PRIVATE,
+        created_by: userId,
+        created_by_username: userName
+      });
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      if (result.visibility === VISIBILITY.PUBLIC) {
+        wsService.notifyHighlightUpdate(docId, result, 'highlight_created');
+      }
+
+      wsService.notifyUserHighlightUpdate(docId, userId, result, 'highlight_created');
+
+      res.status(201).json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.put(
+  '/api/highlights/:id',
+  (req, res) => {
+    try {
+      const userId = req.currentUser.id;
+      if (!userId) {
+        return res.status(401).json({ error: '需要登录' });
+      }
+
+      const { comment_text, visibility } = req.body;
+
+      const result = updateHighlight(req.params.id, { comment_text, visibility }, userId);
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      if (result.visibility === VISIBILITY.PUBLIC) {
+        wsService.notifyHighlightUpdate(result.document_id, result, 'highlight_updated');
+      } else {
+        wsService.notifyHighlightUpdate(result.document_id, { id: result.id, document_id: result.document_id, _removed: true }, 'highlight_removed');
+      }
+
+      wsService.notifyUserHighlightUpdate(result.document_id, userId, result, 'highlight_updated');
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.delete(
+  '/api/highlights/:id',
+  (req, res) => {
+    try {
+      const userId = req.currentUser.id;
+      if (!userId) {
+        return res.status(401).json({ error: '需要登录' });
+      }
+
+      const result = deleteHighlight(req.params.id, userId);
+
+      if (result.error) {
+        return res.status(result.status || 400).json({ error: result.error });
+      }
+
+      const deleted = result.deleted;
+      if (deleted && deleted.visibility === VISIBILITY.PUBLIC) {
+        wsService.notifyHighlightUpdate(deleted.document_id, { id: deleted.id, document_id: deleted.document_id, _removed: true }, 'highlight_deleted');
+      }
+
+      if (deleted) {
+        wsService.notifyUserHighlightUpdate(deleted.document_id, userId, { id: deleted.id, _removed: true }, 'highlight_deleted');
+      }
+
+      res.json(result);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get(
+  '/api/highlights/:id',
+  (req, res) => {
+    try {
+      const userId = req.currentUser.id;
+      const highlight = getHighlightById(req.params.id, userId);
+
+      if (!highlight) {
+        return res.status(404).json({ error: '划线不存在或无权查看' });
+      }
+
+      res.json(highlight);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  }
+);
+
+app.get('/api/users/:userId/highlights', (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const result = listPublicHighlightsByUser(userId);
+    res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

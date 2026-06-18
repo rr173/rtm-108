@@ -31,8 +31,16 @@ const {
   endReadingSession,
   updateReadingProgressForGoal,
   getDocumentReadingStats,
-  updateReadingProgress
+  updateReadingProgress,
+  bulkSetUserProfile,
+  getPersonalizedRecommendations
 } = require('./readingService');
+
+const {
+  VISIBILITY,
+  bulkCreateHighlights,
+  listAllHighlightsForDocument
+} = require('./highlightService');
 
 function seedDemoData() {
   const existingContracts = listContracts();
@@ -1491,6 +1499,190 @@ AI安全与伦理问题越来越受到重视。随着AI技术的广泛应用，�
 
   console.log('   ✅ 5个模拟用户阅读会话已创建');
 
+  console.log('\n生成5个模拟用户的差异化阅读画像...');
+
+  const userReadProfiles = [
+    { userId: 'user-alice', readCount: Math.floor(totalParagraphs * 0.55), readingSpeed: 180 },
+    { userId: 'user-bob', readCount: Math.floor(totalParagraphs * 0.85), readingSpeed: 220 },
+    { userId: 'user-carol', readCount: Math.floor(totalParagraphs * 0.45), readingSpeed: 150 },
+    { userId: 'user-david', readCount: Math.floor(totalParagraphs * 0.95), readingSpeed: 200 },
+    { userId: 'user-eve', readCount: Math.floor(totalParagraphs * 0.35), readingSpeed: 160 }
+  ];
+
+  demoUsers.forEach((user, userIdx) => {
+    const profileConfig = userReadProfiles[userIdx];
+    const readParagraphs = {};
+    const skipped = [];
+    let totalDwell = 0;
+    let totalWords = 0;
+
+    for (let i = 0; i < totalParagraphs; i++) {
+      if (i < profileConfig.readCount) {
+        const paraLen = paragraphs[i]?.length || 100;
+        const dwell = Math.floor(15000 + Math.random() * 60000 + (paraLen / profileConfig.readingSpeed) * 60000);
+        readParagraphs[String(i)] = {
+          paragraph_index: i,
+          first_read_at: Date.now() - (totalParagraphs - i) * 60000,
+          last_read_at: Date.now() - (totalParagraphs - i) * 30000,
+          total_dwell_time_ms: dwell,
+          read_count: 1 + Math.floor(Math.random() * 2)
+        };
+        totalDwell += dwell;
+        totalWords += paraLen;
+      } else {
+        skipped.push(i);
+      }
+    }
+
+    bulkSetUserProfile(profileConfig.userId, docId, {
+      read_paragraphs: readParagraphs,
+      last_read_paragraph: profileConfig.readCount - 1,
+      last_read_time: Date.now(),
+      total_words_read: totalWords,
+      total_reading_time_ms: totalDwell,
+      reading_speed_wpm: profileConfig.readingSpeed,
+      skipped_paragraphs: skipped
+    });
+
+    console.log(`   ✅ ${user.name}: 已读 ${Object.keys(readParagraphs).length}/${totalParagraphs} 段, 跳过 ${skipped.length} 段, 阅读速度 ${profileConfig.readingSpeed} 字/分钟`);
+  });
+
+  console.log('\n生成 user-viewer（当前演示账号）的差异化画像 - 只读15%...');
+  const viewerReadCount = Math.floor(totalParagraphs * 0.15);
+  const viewerReadParas = {};
+  const viewerSkipped = [];
+  let viewerDwell = 0;
+  let viewerWords = 0;
+
+  for (let i = 0; i < totalParagraphs; i++) {
+    if (i < viewerReadCount) {
+      const paraLen = paragraphs[i]?.length || 100;
+      const dwell = Math.floor(20000 + Math.random() * 40000);
+      viewerReadParas[String(i)] = {
+        paragraph_index: i,
+        first_read_at: Date.now() - (viewerReadCount - i) * 120000,
+        last_read_at: Date.now() - (viewerReadCount - i) * 60000,
+        total_dwell_time_ms: dwell,
+        read_count: 1
+      };
+      viewerDwell += dwell;
+      viewerWords += paraLen;
+    } else {
+      viewerSkipped.push(i);
+    }
+  }
+
+  bulkSetUserProfile('user-viewer', docId, {
+    read_paragraphs: viewerReadParas,
+    last_read_paragraph: viewerReadCount - 1,
+    last_read_time: Date.now(),
+    total_words_read: viewerWords,
+    total_reading_time_ms: viewerDwell,
+    reading_speed_wpm: 170,
+    skipped_paragraphs: viewerSkipped
+  });
+  console.log(`   ✅ user-viewer: 已读 ${Object.keys(viewerReadParas).length}/${totalParagraphs} 段, 跳过 ${viewerSkipped.length} 段 - 将产生大量推荐`);
+
+  console.log('\n验证推荐结果 - user-viewer 的个性化推荐：');
+  const viewerRecommendations = getPersonalizedRecommendations('user-viewer', docId);
+  console.log(`   ✅ 推荐段落数：${viewerRecommendations.recommendation_count}`);
+  viewerRecommendations.recommendations.slice(0, 5).forEach((rec, idx) => {
+    console.log(`      ${idx + 1}. 段落${rec.paragraph_index + 1} - 热力值: ${rec.heat_score}, 阅读人数: ${rec.unique_reader_count}`);
+  });
+  if (viewerRecommendations.recommendation_count > 5) {
+    console.log(`      ... 还有 ${viewerRecommendations.recommendation_count - 5} 条推荐`);
+  }
+
+  console.log('\n生成模拟划线批注数据 - Alice 和 Bob 各有划线（部分公开部分私有）...');
+
+  const demoHighlights = [
+    {
+      document_id: docId,
+      paragraph_index: 1,
+      start_offset: 10,
+      end_offset: 60,
+      selected_text: paragraphs[1]?.substring(10, 60) || '人工智能（Artificial Intelligence，简称AI）',
+      comment_text: '这里的定义很清晰，适合做报告引用',
+      visibility: VISIBILITY.PUBLIC,
+      created_by: 'user-alice',
+      created_by_username: 'Alice（产品经理）'
+    },
+    {
+      document_id: docId,
+      paragraph_index: 2,
+      start_offset: 5,
+      end_offset: 50,
+      selected_text: paragraphs[2]?.substring(5, 50) || '人工智能的发展历程可以追溯到20世纪50年代',
+      comment_text: '【私藏】这段历史背景写得不错，下次写方案可以用',
+      visibility: VISIBILITY.PRIVATE,
+      created_by: 'user-alice',
+      created_by_username: 'Alice（产品经理）'
+    },
+    {
+      document_id: docId,
+      paragraph_index: 5,
+      start_offset: 0,
+      end_offset: 45,
+      selected_text: paragraphs[5]?.substring(0, 45) || '机器学习是人工智能的核心技术之一',
+      comment_text: '核心概念，给团队做培训时可以重点强调',
+      visibility: VISIBILITY.PUBLIC,
+      created_by: 'user-alice',
+      created_by_username: 'Alice（产品经理）'
+    },
+    {
+      document_id: docId,
+      paragraph_index: 6,
+      start_offset: 15,
+      end_offset: 80,
+      selected_text: paragraphs[6]?.substring(15, 80) || '深度学习是机器学习的一个分支，它基于人工神经网络',
+      comment_text: '建议产品团队所有人都仔细读一下这一段',
+      visibility: VISIBILITY.PUBLIC,
+      created_by: 'user-bob',
+      created_by_username: 'Bob（工程师）'
+    },
+    {
+      document_id: docId,
+      paragraph_index: 7,
+      start_offset: 0,
+      end_offset: 55,
+      selected_text: paragraphs[7]?.substring(0, 55) || '自然语言处理（NLP）是人工智能的重要研究方向',
+      comment_text: '【内部笔记】这块和我们项目直接相关，需要评估技术方案',
+      visibility: VISIBILITY.PRIVATE,
+      created_by: 'user-bob',
+      created_by_username: 'Bob（工程师）'
+    },
+    {
+      document_id: docId,
+      paragraph_index: 15,
+      start_offset: 20,
+      end_offset: 75,
+      selected_text: paragraphs[15]?.substring(20, 75) || '大模型技术是当前人工智能发展的重要方向',
+      comment_text: '团队讨论过的大模型选型，这里写得比较客观',
+      visibility: VISIBILITY.PUBLIC,
+      created_by: 'user-bob',
+      created_by_username: 'Bob（工程师）'
+    },
+    {
+      document_id: docId,
+      paragraph_index: 16,
+      start_offset: 0,
+      end_offset: 50,
+      selected_text: paragraphs[16]?.substring(0, 50) || '边缘人工智能是另一个重要趋势',
+      comment_text: '和端侧部署方案相关，可以和架构组聊一下',
+      visibility: VISIBILITY.PUBLIC,
+      created_by: 'user-alice',
+      created_by_username: 'Alice（产品经理）'
+    }
+  ];
+
+  const createdHighlights = bulkCreateHighlights(demoHighlights);
+  console.log(`   ✅ 已创建 ${createdHighlights.length} 条划线批注`);
+  console.log(`      - Alice：${createdHighlights.filter(h => h.created_by === 'user-alice').length} 条（公开 ${createdHighlights.filter(h => h.created_by === 'user-alice' && h.visibility === VISIBILITY.PUBLIC).length} / 私有 ${createdHighlights.filter(h => h.created_by === 'user-alice' && h.visibility === VISIBILITY.PRIVATE).length}）`);
+  console.log(`      - Bob：${createdHighlights.filter(h => h.created_by === 'user-bob').length} 条（公开 ${createdHighlights.filter(h => h.created_by === 'user-bob' && h.visibility === VISIBILITY.PUBLIC).length} / 私有 ${createdHighlights.filter(h => h.created_by === 'user-bob' && h.visibility === VISIBILITY.PRIVATE).length}）`);
+
+  const viewerHighlights = listAllHighlightsForDocument(docId, 'user-viewer');
+  console.log(`      - user-viewer 可见 ${viewerHighlights.length} 条（只有公开划线）`);
+
   console.log('\n📊 阅读分析演示数据统计：');
   const stats = getDocumentReadingStats(docId);
   console.log(`   - 总阅读人数：${stats.total_readers}`);
@@ -1509,6 +1701,11 @@ AI安全与伦理问题越来越受到重视。随着AI技术的广泛应用，�
   console.log('   7. 可设定每日阅读目标，查看进度和预计剩余时间');
   console.log('   8. 多人同时阅读时通过WebSocket实时更新热力图');
   console.log('   9. 底部显示当前在线读者列表');
+  console.log('  10. ⭐ 个性化推荐：段落左侧星形图标标识"未读但大家都觉得重要"的推荐段落（根据您的阅读历史和群体热力计算）');
+  console.log('  11. 📝 协同划线批注：选中文字弹出浮层可添加批注/划线，支持公开/私有可见性');
+  console.log('  12. 🎨 划线渲染：自己的划线半透明黄色，他人公开划线半透明蓝色，悬浮查看批注内容和作者');
+  console.log('  13. 📋 我的划线面板：右侧面板列出当前文档所有划线，点击快速定位到原文');
+  console.log('  14. 🔄 实时同步：新划线通过WebSocket实时推送给同文档在线用户，推荐列表随阅读进度动态更新');
 
   console.log('\n✅ 阅读分析演示数据初始化完成！');
 }

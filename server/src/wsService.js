@@ -5,7 +5,8 @@ const { listMirrorsByDocument, getMirrorById, getTranslationWorkbench } = requir
 const { getDocumentById } = require('./documentService');
 const { getInstanceById, listTodos } = require('./approvalWorkflowService');
 const { getKnowledgeGraph, listConflictsByDocument, getConflictingAnnotationIds } = require('./annotationService');
-const { getDocumentReadingStats, getActiveReaders, getDocumentHeatmap } = require('./readingService');
+const { getDocumentReadingStats, getActiveReaders, getDocumentHeatmap, getPersonalizedRecommendations } = require('./readingService');
+const { listAllHighlightsForDocument, listMyHighlightsByDocument, getDocumentHighlightStats } = require('./highlightService');
 
 class WsService {
   constructor(server) {
@@ -26,6 +27,12 @@ class WsService {
     this.clientAnnotations = new Map();
     this.readingSubscriptions = new Map();
     this.clientReadings = new Map();
+    this.highlightSubscriptions = new Map();
+    this.clientHighlights = new Map();
+    this.userHighlightSubscriptions = new Map();
+    this.clientUserHighlights = new Map();
+    this.recommendationSubscriptions = new Map();
+    this.clientRecommendations = new Map();
 
     this.wss.on('connection', (ws) => {
       ws.id = Math.random().toString(36).substr(2, 9);
@@ -101,6 +108,24 @@ class WsService {
         break;
       case 'unsubscribe_reading':
         this.unsubscribeReading(ws, data.documentId);
+        break;
+      case 'subscribe_highlights':
+        this.subscribeHighlights(ws, data.documentId, data.userId);
+        break;
+      case 'unsubscribe_highlights':
+        this.unsubscribeHighlights(ws, data.documentId);
+        break;
+      case 'subscribe_user_highlights':
+        this.subscribeUserHighlights(ws, data.userId);
+        break;
+      case 'unsubscribe_user_highlights':
+        this.unsubscribeUserHighlights(ws, data.userId);
+        break;
+      case 'subscribe_recommendations':
+        this.subscribeRecommendations(ws, data.documentId, data.userId);
+        break;
+      case 'unsubscribe_recommendations':
+        this.unsubscribeRecommendations(ws, data.documentId);
         break;
       default:
         ws.send(JSON.stringify({ type: 'error', message: 'Unknown message type' }));
@@ -705,6 +730,168 @@ class WsService {
     }
   }
 
+  subscribeHighlights(ws, documentId, userId = null) {
+    const docId = parseInt(documentId);
+    if (!this.highlightSubscriptions.has(docId)) {
+      this.highlightSubscriptions.set(docId, new Set());
+    }
+    this.highlightSubscriptions.get(docId).add(ws);
+
+    if (!this.clientHighlights.has(ws)) {
+      this.clientHighlights.set(ws, new Set());
+    }
+    this.clientHighlights.get(ws).add(docId);
+
+    const allHighlights = listAllHighlightsForDocument(docId, userId);
+    const stats = getDocumentHighlightStats(docId, userId);
+    const myHighlights = userId ? listMyHighlightsByDocument(docId, userId) : [];
+
+    ws.send(JSON.stringify({
+      type: 'highlights_status',
+      documentId: docId,
+      highlights: allHighlights,
+      my_highlights: myHighlights,
+      stats,
+      userId
+    }));
+  }
+
+  unsubscribeHighlights(ws, documentId) {
+    const docId = parseInt(documentId);
+    if (this.highlightSubscriptions.has(docId)) {
+      this.highlightSubscriptions.get(docId).delete(ws);
+    }
+    if (this.clientHighlights.has(ws)) {
+      this.clientHighlights.get(ws).delete(docId);
+    }
+  }
+
+  notifyHighlightUpdate(documentId, highlight, eventType = 'highlight_updated') {
+    const docId = parseInt(documentId);
+    const message = JSON.stringify({
+      type: eventType,
+      documentId: docId,
+      highlight
+    });
+
+    if (this.highlightSubscriptions.has(docId)) {
+      this.highlightSubscriptions.get(docId).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+  }
+
+  subscribeUserHighlights(ws, userId) {
+    if (!userId) return;
+    const userKey = String(userId);
+    if (!this.userHighlightSubscriptions.has(userKey)) {
+      this.userHighlightSubscriptions.set(userKey, new Set());
+    }
+    this.userHighlightSubscriptions.get(userKey).add(ws);
+
+    if (!this.clientUserHighlights.has(ws)) {
+      this.clientUserHighlights.set(ws, new Set());
+    }
+    this.clientUserHighlights.get(ws).add(userKey);
+  }
+
+  unsubscribeUserHighlights(ws, userId) {
+    if (!userId) return;
+    const userKey = String(userId);
+    if (this.userHighlightSubscriptions.has(userKey)) {
+      this.userHighlightSubscriptions.get(userKey).delete(ws);
+    }
+    if (this.clientUserHighlights.has(ws)) {
+      this.clientUserHighlights.get(ws).delete(userKey);
+    }
+  }
+
+  notifyUserHighlightUpdate(documentId, userId, highlight, eventType = 'highlight_updated') {
+    if (!userId) return;
+    const userKey = String(userId);
+    const docId = parseInt(documentId);
+    const message = JSON.stringify({
+      type: eventType,
+      documentId: docId,
+      userId,
+      highlight
+    });
+
+    if (this.userHighlightSubscriptions.has(userKey)) {
+      this.userHighlightSubscriptions.get(userKey).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+  }
+
+  subscribeRecommendations(ws, documentId, userId = null) {
+    const docId = parseInt(documentId);
+    const key = `${docId}:${userId || 'anon'}`;
+    if (!this.recommendationSubscriptions.has(key)) {
+      this.recommendationSubscriptions.set(key, new Set());
+    }
+    this.recommendationSubscriptions.get(key).add(ws);
+
+    if (!this.clientRecommendations.has(ws)) {
+      this.clientRecommendations.set(ws, new Set());
+    }
+    this.clientRecommendations.get(ws).add(key);
+
+    if (userId) {
+      const recommendations = getPersonalizedRecommendations(userId, docId);
+      ws.send(JSON.stringify({
+        type: 'recommendations_status',
+        documentId: docId,
+        userId,
+        recommendations
+      }));
+    }
+  }
+
+  unsubscribeRecommendations(ws, documentId) {
+    const docId = parseInt(documentId);
+    const subscriptionsToRemove = [];
+    this.clientRecommendations.get(ws)?.forEach(key => {
+      if (key.startsWith(`${docId}:`)) {
+        subscriptionsToRemove.push(key);
+      }
+    });
+
+    subscriptionsToRemove.forEach(key => {
+      if (this.recommendationSubscriptions.has(key)) {
+        this.recommendationSubscriptions.get(key).delete(ws);
+      }
+      if (this.clientRecommendations.has(ws)) {
+        this.clientRecommendations.get(ws).delete(key);
+      }
+    });
+  }
+
+  notifyReadingRecommendationUpdate(documentId, userId, recommendations) {
+    const docId = parseInt(documentId);
+    if (!userId) return;
+
+    const key = `${docId}:${userId}`;
+    const message = JSON.stringify({
+      type: 'recommendations_updated',
+      documentId: docId,
+      userId,
+      recommendations
+    });
+
+    if (this.recommendationSubscriptions.has(key)) {
+      this.recommendationSubscriptions.get(key).forEach(ws => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
+      });
+    }
+  }
+
   cleanupClient(ws) {
     const contracts = this.clientContracts.get(ws);
     if (contracts) {
@@ -784,6 +971,36 @@ class WsService {
         }
       });
       this.clientReadings.delete(ws);
+    }
+
+    const highlights = this.clientHighlights.get(ws);
+    if (highlights) {
+      highlights.forEach(documentId => {
+        if (this.highlightSubscriptions.has(documentId)) {
+          this.highlightSubscriptions.get(documentId).delete(ws);
+        }
+      });
+      this.clientHighlights.delete(ws);
+    }
+
+    const userHighlights = this.clientUserHighlights.get(ws);
+    if (userHighlights) {
+      userHighlights.forEach(userKey => {
+        if (this.userHighlightSubscriptions.has(userKey)) {
+          this.userHighlightSubscriptions.get(userKey).delete(ws);
+        }
+      });
+      this.clientUserHighlights.delete(ws);
+    }
+
+    const recommendations = this.clientRecommendations.get(ws);
+    if (recommendations) {
+      recommendations.forEach(key => {
+        if (this.recommendationSubscriptions.has(key)) {
+          this.recommendationSubscriptions.get(key).delete(ws);
+        }
+      });
+      this.clientRecommendations.delete(ws);
     }
   }
 }
